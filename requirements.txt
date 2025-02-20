@@ -1,0 +1,11 @@
+mysql-connector-python
+numpy
+packaging
+pandas
+plotly
+psutil
+python-dateutil
+pytz
+six
+tenacity
+tzdata
