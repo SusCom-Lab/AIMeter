@@ -19,6 +19,8 @@ Energy Consumption Monitoring Tool
 - Optimized MySQL batch writing (transaction commit frequency adjustable, with a daily average record processing capacity of tens of millions per table)
 - Generates interactive HTML visualization reports (based on Plotly dynamic charts, supporting multi-dimensional data comparison)
 
+**Operations**: The user can submit tasks and monitor CPU and GPU data in real time by running the script, and the data will be saved. The user can also utilize the saved data to generate charts for visualization and analysis.
+
 ## Overall Implementation
 
 ### Flowchart
