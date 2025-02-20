@@ -1,35 +1,34 @@
-# 项目名称
-能耗监控工具
+# Project Name
+Energy Consumption Monitoring Tool
 
-## 项目简介
+## Project Overview
 
-**背景**：当前AI研究领域（尤其是大模型训练、超参数搜索等场景）普遍存在"性能优先"的思维定式，研究者往往将硬件资源视为无限供给的计算单元，对GPU/CPU的能耗特性（如功率波动、热耗散效率）缺乏系统化关注。而随着AI任务对算力需求的指数级增长，硬件资源的能耗效率逐渐成为影响科研成本和环境可持续性的重要因素。因此，如何有效、轻量化的监控能耗相关指标显得十分重要。目前
-能耗数据采集主要依赖研究者手动执行nvidia-smi、perf等命令行工具，数据记录与任务执行呈割裂状态，同时还增加了科研人员的调试与优化成本。
+**Background**: In the current AI research field (especially in scenarios like large model training, hyperparameter search, etc.), there is a prevalent "performance-first" mindset. Researchers often treat hardware resources as virtually unlimited computing units, lacking systematic attention to the energy consumption characteristics of GPUs/CPUs (e.g., power fluctuations, thermal dissipation efficiency). As AI tasks experience exponential growth in computational demands, the energy efficiency of hardware resources has become a critical factor influencing research costs and environmental sustainability. Therefore, effectively and lightweightly monitoring energy consumption-related metrics has become extremely important. Currently, energy consumption data collection mainly relies on researchers manually executing command-line tools like nvidia-smi and perf, which results in fragmented data recording and task execution, adding to the debugging and optimization workload of researchers.
 
-**目标**：开发一套自动化、轻量级的跨平台监控工具，实现以下核心功能：
+**Objective**: To develop an automated, lightweight, cross-platform monitoring tool that implements the following core functionalities:
 
-- 实时采集：以可配置的时间间隔捕获CPU/GPU的能耗与性能指标
-- 多设备支持：兼容多GPU服务器环境
-- 数据持久化：提供CSV和MySQL两种存储方案，适配不同规模的数据管理需求
-- 可视化分析：生成交互式图表，直观展示硬件资源利用率与能耗的时空关系
+- Real-time collection: Capture CPU/GPU energy consumption and performance metrics at configurable time intervals
+- Multi-device support: Compatible with multi-GPU server environments
+- Data persistence: Provide CSV and MySQL storage options to accommodate different scales of data management needs
+- Visualization and analysis: Generate interactive charts to visually display the spatiotemporal relationship between hardware resource utilization and energy consumption
 
-**成果**：实现了一套高可用性能源监控系统，具备以下技术指标：
+**Results**: A highly available energy monitoring system with the following technical specifications:
 
-- 支持1秒级数据采集精度
-- 兼容NVIDIA全系列GPU（基于nvidia-smi的标准化输出解析）
-- 提供MySQL批量写入优化（事务提交频率可调，单表日均千万级记录处理能力）
-- 生成交互式HTML可视化报告（基于Plotly的动态图表，支持多维度数据对比）
+- Supports 1-second data collection precision
+- Compatible with the entire range of NVIDIA GPUs (based on nvidia-smi standardized output parsing)
+- Optimized MySQL batch writing (transaction commit frequency adjustable, with a daily average record processing capacity of tens of millions per table)
+- Generates interactive HTML visualization reports (based on Plotly dynamic charts, supporting multi-dimensional data comparison)
 
-## 项目整体实现
+## Overall Implementation
 
-### 流程图
+### Flowchart
 ![image.png](image.png)
 
-### 1.监控数据采集模块
-**GPU指标采集**：通过subprocess调用nvidia-smi命令行工具，解析以下关键参数：
+### 1. Monitoring Data Collection Module
+**GPU Metrics Collection**: Use subprocess to call the nvidia-smi command-line tool and parse the following key parameters:
 
 ```Python
-# 核心监控指标
+# Core monitoring metrics
 GPU_QUERY_FIELDS = [
     "name", "index", "power.draw", "utilization.gpu", 
     "utilization.memory", "temperature.gpu", "temperature.memory",
@@ -37,47 +36,47 @@ GPU_QUERY_FIELDS = [
     "pcie.link.width.current", "pcie.link.width.current", "sm"]
 ```
 
-**CPU指标采集**：基于psutil库实现多核利用率统计：
+**CPU Metrics Collection**: Use the psutil library to implement multi-core utilization statistics:
 
 ```Python
 def get_cpu_info():
-    return psutil.cpu_percent(interval=1, percpu=False)  # 全局平均利用率
+    return psutil.cpu_percent(interval=1, percpu=False)  # Global average utilization
 ```
 
-### 2.数据存储模块
-**CSV存储方案**: 采用追加写入模式，文件命名规范：{task_name}_{timestamp}.csv
+### 2. Data Storage Module
+**CSV Storage Solution**: Append-write mode is used, and file naming convention: {task_name}_{timestamp}.csv
 ```Python
-# 数据字段与MySQL表结构严格对齐
+# Data fields and MySQL table structure strictly aligned
 CSV_COLUMNS = [
     'timestamp', 'task_name', 'cpu_usage', 'gpu_name', 'gpu_index',
     'power_draw', 'utilization_gpu', 'utilization_memory', ...
 ]
 ```
 
-**MySQL存储方案**: 动态建表机制（按任务名称+时间戳自动创建），支持InnoDB引擎的事务处理：
+**MySQL Storage Solution**: Dynamic table creation mechanism (automatically create tables based on task name + timestamp), supporting transaction processing with the InnoDB engine:
 ```SQL
 CREATE TABLE IF NOT EXISTS {table_name} (
-    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '自增ID',
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '采集时间',
-    task_name VARCHAR(50) COMMENT '任务名称',
-    gpu_index INT COMMENT 'GPU设备索引',
-    sm FLOAT COMMENT 'SM利用率(%)',
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT 'Auto-incremented ID',
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Capture time',
+    task_name VARCHAR(50) COMMENT 'Task name',
+    gpu_index INT COMMENT 'GPU device index',
+    sm FLOAT COMMENT 'SM utilization rate (%)',
     ...
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-### 3.可视化模块
-动态图表生成基于Plotly库创建包含多个维度的交互式折线图：
+### 3. Visualization Module
+Dynamic chart generation based on the Plotly library, creating interactive line charts with multiple dimensions:
 ```Python
 fig.add_trace(go.Scatter(
     x=df['timestamp'], 
     y=df['power_draw'],
     mode='lines',
     name='GPU Power (W)',
-    hovertemplate="<b>%{x}</b><br>功率: %{y}W"
+    hovertemplate="<b>%{x}</b><br>Power: %{y}W"
 ))
 ```
 
-## 项目使用说明
+## Project Usage Instructions
 
-有关详细的项目使用说明，请参见 [UserManual.md](UserManual.md)。
+For detailed project usage instructions, please refer to [UserManual.md].

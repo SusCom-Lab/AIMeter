@@ -1,119 +1,115 @@
-# 实时 CPU 和 GPU 监控工具
+# Real-time CPU and GPU Monitoring Tool
 
-## 概述
-本工具可实时监控 CPU 和 GPU 的数据，根据用户的选择，将数据保存至 csv 文件或者 MySQL 数据库中，并根据保存的 csv 文件或者 Mysql 数据库中的表格生成可视化图表。它专为需要分析系统性能的用户而设计。
+## Overview
+This tool provides real-time monitoring of CPU and GPU data. Based on the user's selection, the data can be saved to a CSV file or MySQL database, and visualized into charts based on the saved CSV file or MySQL table. It is designed for users who need to analyze system performance.
 
-以下为监控的数据：
-- cpu_usage：CPU 使用率。
-- gpu_name：GPU 的名称。
-- gpu_index：GPU 在系统中的索引编号。
-- power_draw：当前 GPU 的功耗。
-- utilization_gpu：GPU 核心的利用率。
-- utilization_memory：GPU 显存的使用率。
-- pcie_link_gen_current：GPU 当前使用的 PCIe 代数，例如 3、4、5。
-- pcie_link_width_current：GPU 当前使用的 PCIe 通道宽度，例如 1、4、8、16。
-- temperature_gpu：GPU 核心温度。
-- temperature_memory：GPU 显存温度。
-- sm（Streaming Multiprocessors）：GPU 的流式多处理器（SM）的使用率。
-- clocks_gr : GPU 时钟频率。
-- clocks_mem : GPU 显存时钟频率。
+The data monitored includes:
+- cpu_usage: CPU usage percentage.
+- gpu_name: GPU name.
+- gpu_index: Index number of the GPU in the system.
+- power_draw: Current power consumption of the GPU.
+- utilization_gpu: GPU core utilization percentage.
+- utilization_memory: GPU memory utilization percentage.
+- pcie_link_gen_current: Current PCIe generation used by the GPU, such as 3, 4, 5.
+- pcie_link_width_current: Current PCIe lane width used by the GPU, such as 1, 4, 8, 16.
+- temperature_gpu: GPU core temperature.
+- temperature_memory: GPU memory temperature.
+- sm (Streaming Multiprocessors): GPU Streaming Multiprocessor (SM) utilization.
+- clocks_gr: GPU clock frequency.
+- clocks_mem: GPU memory clock frequency.
 
-说明：目前默认，记录的 CPU 和 GPU 上的利用率和功率等信息均为一个用户的一个任务所产生的，无法识别并行状态下，不同任务各自的利用率和功率等信息。
+Note: Currently, the recorded CPU and GPU utilization and power data are for a single user's task and do not differentiate between parallel tasks running simultaneously. 
 
-## 功能特点
-- 实时监控 CPU 和 GPU 统计数据。
-- 自动将数据记录到 csv文件或者 MySQL 数据库中。
-- 支持使用 `plotly` 进行数据可视化。
-- 监控间隔可配置。
+## Features
+- Real-time monitoring of CPU and GPU statistics.
+- Automatically records data to a CSV file or MySQL database.
+- Supports data visualization using `plotly`.
+- Configurable monitoring intervals.
 
-## 文件目录
-- `monitor.py`: 监控工具脚本
-- `requirements.txt`: 依赖
-- `UserManual.md`: 用户使用手册
-- `Readme.md`: 项目说明文档
+## File Directory
+- `monitor.py`: Monitoring tool script.
+- `requirements.txt`: Dependencies.
+- `UserManual.md`: User manual.
+- `Readme.md`: Project documentation.
 
-## 使用方法
+## Usage
 
-###  步骤一：在环境中安装依赖（在待提交任务的环境中安装）
+### Step 1: Install dependencies in the environment (where the task will be submitted)
 
 `pip install -r requirements.txt`
 
-如果在后续运行时出现`mysql`连接相关问题，需要对`mysql`进行升级:
+If MySQL connection-related issues arise during execution, upgrade MySQL:
 
 ``pip install --upgrade mysql-connector-python``
 
-###  步骤二：将`monitor.py`脚本复制到待提交任务的同级目录下
+### Step 2: Copy the `monitor.py` script to the same directory as the task to be submitted.
 
-###  步骤三：运行脚本进行监控，同时传入待提交任务运行命令
+### Step 3: Run the script to monitor, passing the task execution command
 
-说明：脚本需要在 要被监控的服务器 上运行。
+Note: The script needs to run on the server to be monitored.
 
-运行脚本提交任务同时开始监控：
+Run the script to submit the task and start monitoring:
 ```bash
-python monitor.py monitor -n "task_name" -t 1/10/…… -cmd "Command to execute for the task" -o "csv/mysql"
+python monitor.py monitor -n "task_name" -t 1/10/... -cmd "Command to execute for the task" -o "csv/mysql"
 ```
 
-参数说明：
+Parameters:
+- monitor: Activate monitoring function.
+- n: Task name (used for identification).
+- t: Sampling interval (default is 10s).
+- cmd: Command to execute for the task.
+- o: Storage type (default is csv).
 
-monitor: 使用监控功能
-- n: 任务名称（用于标识）
-- t: 采样时间间隔（默认为10s）
-- cmd: 提交任务命令
-- o: 存储方式（默认为csv）
+The script will:
+- Create a `monitor.log` log file in the current directory.
+- Create a `task_name_timestamp.csv` file or create a table `task_name_timestamp` in the `monitor` database in MySQL (based on the `o` parameter).
+- Submit the task.
+- Save the real-time monitoring data to the file `task_name_timestamp.csv` or table `task_name_timestamp`.
+- Automatically terminate the script and stop monitoring after the task ends.
 
-脚本将会：
-- 在当前文件所在目录下创建`monitor.log`日志文件
-- 在当前文件所在目录下创建`task_name_timestamp.csv`文件 或 在管理节点的mysql数据库 `monitor` 中创建表 `task_name_timestamp`(根据 `o` 参数进行选择)。
-- 提交任务。
-- 将实时检测数据保存到 文件`task_name_timestamp.csv` 或 表`task_name_timestamp` 中。
-- 任务结束后自动终止脚本，停止检测。
+**The file name can be found in `monitor.log`.**
 
-**文件名可在`monitor.log`中查看得到**
-
-一个例子：
+Example:
 ```bash
 python monitor.py monitor -n "fine_tuning_for_llama2_7b" -t 10 -cmd "python finetuning.py" -o "csv"
 ```
 
-参数解释：
+Parameter explanation:
+- `python monitor.py monitor`: Call the `monitor.py` Python script and execute the monitoring function.
+- `n "fine_tuning_for_llama2_7b"`: Specify the task name `fine_tuning_for_llama2_7b` for identification and as the name of the CSV file or database table.
+- `t 10`: Set the sampling interval to 10 seconds, meaning system resource usage will be recorded every 10 seconds.
+- `cmd "python finetuning.py"`: Submit and execute the command `python finetuning.py`, where `finetuning.py` is the script for fine-tuning LLaMA 2 7B.
+- `o "csv"`: Store the monitoring data in a CSV file rather than in the MySQL database.
 
-- python monitor.py monitor：调用 monitor.py 这个 Python 脚本，并执行 monitor 监控功能。
-- n "fine_tuning_for_llama2_7b"：指定任务名称 fine_tuning_for_llama2_7b，用于标识监控的任务，并作为 CSV 文件或数据库表的名称。
-- t 10：设置采样时间间隔为 10 秒，即每 10 秒记录一次系统资源使用情况。
-- cmd "python finetuning.py"：提交并执行 python finetuning.py 这个任务，finetuning.py 是 LLaMA 2 7B 的微调脚本。
-- o "csv"：将监控数据存储到 CSV 文件 中，而不是 MySQL 数据库。
-
-### 步骤四：生成可视化图表
-运行可视化函数来创建图表：
+### Step 4: Generate Visualization Charts
+Run the visualization function to create charts:
 ```bash
 python monitor.py plot -t "table_name" -f "csv/mysql"
 ```
 
-参数说明：
+Parameters:
+- plot: Activate the plotting function.
+- t: Table name.
+- f: Table format (default is csv).
 
-plot: 使用画图功能
-- t: 表名
-- f: 表的格式（默认为csv）
+This will generate an interactive chart using `plotly`, which will be displayed in the browser and saved as an `html` file in the `monitor_graphs` directory.
 
-这将会使用 `plotly` 生成交互式图表，在浏览器中显示出来，同时也生成`html`文件保存到目录`monitor_ghraphs`下。
-
-两个例子：
+Two examples:
 ```bash
 python monitor.py plot -t "fine_tunning_for_llama2_7b_20250112_202325" -f "mysql"
 ```
 
-- python monitor.py plot：调用 monitor.py 的 绘图 功能。
-- t "fine_tunning_for_llama2_7b_20250112_202325"：指定要绘图的数据表名称，这里数据存储在 MySQL 数据库 中，表名为 fine_tunning_for_llama2_7b_20250112_202325。
-- f "mysql"：指定数据来源是 MySQL 数据库。
+- `python monitor.py plot`: Call the `monitor.py` script and activate the plotting function.
+- `t "fine_tunning_for_llama2_7b_20250112_202325"`: Specify the table name to plot data from, stored in the MySQL database, with the table name `fine_tunning_for_llama2_7b_20250112_202325`.
+- `f "mysql"`: Specify the data source as MySQL.
 
 ```bash
 python monitor.py plot -t "fine_tuning_for_llama2_7b_20250204_154110.csv" -f "csv"
 ```
 
-- python monitor.py plot：调用 monitor.py 的 绘图 功能。
-- t "fine_tuning_for_llama2_7b_20250204_154110.csv"：指定要绘图的文件名称，这里数据存储在 CSV 文件 中，文件名为 fine_tuning_for_llama2_7b_20250204_154110.csv。
-- f "csv"：指定数据来源是 CSV 文件。
+- `python monitor.py plot`: Call the `monitor.py` script and activate the plotting function.
+- `t "fine_tuning_for_llama2_7b_20250204_154110.csv"`: Specify the file name to plot data from, stored in the CSV file, with the file name `fine_tuning_for_llama2_7b_20250204_154110.csv`.
+- `f "csv"`: Specify the data source as CSV.
 
-## 日志
-日志默认存储在 `monitor.log` 文件中。查看该文件可获取有关错误和系统活动的详细信息。
-
+## Logs
+Logs are stored by default in the `monitor.log` file. Check this file for detailed information about errors and system activities.
