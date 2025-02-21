@@ -57,9 +57,10 @@ def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format
     stop_event (threading.Event): 用于停止监控的事件
     output_format (str): 输出格式（默认为CSV）
     """
-    time_interval = time_interval - 1
+    # time_interval = time_interval - 1
     while not stop_event.is_set():
         try:
+            start_time = time.time() # 记录开始时间
             # 用于插入数据的时间戳
             time_stamp_insert = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             gpu_info = get_gpu_info()
@@ -82,11 +83,14 @@ def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format
             if inserted_count % 10 == 0 or inserted_count == 1:
                 logging.info(f"Total records inserted so far: {inserted_count}")
 
-            time.sleep(time_interval)
+            # time.sleep(time_interval)
+            elapsed_time = time.time() - start_time
+            remaining_time = max(0, time_interval - elapsed_time)
+            time.sleep(remaining_time)
 
         except Exception as e:
             logging.error(f"Unexpected error in monitor_stats: {e}")
-            time.sleep(time_interval)
+            time.sleep(time_interval)       
 
 def get_gpu_info():
     """
@@ -158,7 +162,7 @@ def get_cpu_info():
     float: CPU使用率
     """
     try:
-        cpu_usage = psutil.cpu_percent(interval=1)
+        cpu_usage = psutil.cpu_percent(interval=0.25)
         return cpu_usage
     except Exception as e:
         logging.error(f"Error getting CPU info: {e}")
