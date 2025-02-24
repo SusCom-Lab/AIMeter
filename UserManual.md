@@ -5,9 +5,12 @@ This tool provides real-time monitoring of CPU and GPU data. Based on the user's
 
 The data monitored includes:
 - cpu_usage: CPU usage percentage.
+- cpu_power_draw: Current power consumption of the CPU.
+- dram_usage: DRAM memory usage percentage.
+- dram_power_draw: Current power consumption of the DRAM.
 - gpu_name: GPU name.
 - gpu_index: Index number of the GPU in the system.
-- power_draw: Current power consumption of the GPU.
+- gpu_power_draw: Current power consumption of the GPU.
 - utilization_gpu: GPU core utilization percentage.
 - utilization_memory: GPU memory utilization percentage.
 - pcie_link_gen_current: Current PCIe generation used by the GPU, such as 3, 4, 5.

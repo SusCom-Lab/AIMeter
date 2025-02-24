@@ -74,11 +74,16 @@ def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format
                 logging.warning("Failed to get CPU info, skipping data collection.")
                 time.sleep(time_interval)
                 continue
+            
+            cpu_power = get_cpu_power_info()
+            dram_power = get_dram_power_info()
+            dram_usage = get_dram_usage_info()
+            other_metrics = [cpu_power, dram_power, dram_usage]
 
             if output_format == "csv":
-                save_to_csv(task_name, cpu_usage, gpu_info, timestamp, time_stamp_insert)
+                save_to_csv(task_name, cpu_usage, gpu_info, other_metrics, timestamp, time_stamp_insert)
             elif output_format == "mysql":
-                save_to_mysql(task_name, cpu_usage, gpu_info, timestamp, time_stamp_insert)
+                save_to_mysql(task_name, cpu_usage, gpu_info, other_metrics, timestamp, time_stamp_insert)
 
             if inserted_count % 10 == 0 or inserted_count == 1:
                 logging.info(f"Total records inserted so far: {inserted_count}")
@@ -167,8 +172,142 @@ def get_cpu_info():
     except Exception as e:
         logging.error(f"Error getting CPU info: {e}")
         return None
+    
+def get_cpu_power_info(sample_interval=0.1):
+    """
+    获取 CPU 功耗（两次采样差值计算，单位：瓦特）
+    参数:sample_interval (float): 采样间隔（秒）
+    返回:float: 平均功耗（瓦特）或 "N/A" 表示无法获取功耗
+    """
+    try:
+        powercap_path = "/sys/class/powercap"
+        if not os.path.exists(powercap_path):
+            return "N/A"
+        
+        domains = []
+        for entry in os.listdir(powercap_path):
+            if entry.startswith("intel-rapl:") and ":" not in entry[len("intel-rapl:"):]:
+                domain_path = os.path.join(powercap_path, entry)
+                energy_path = os.path.join(domain_path, "energy_uj")
+                
+                if os.path.exists(energy_path):
+                    with open(energy_path, "r") as f:
+                        energy_start = int(f.read().strip())
+                    timestamp_start = time.time()
+                    
+                    domains.append({
+                        "path": energy_path,
+                        "energy_start": energy_start,
+                        "timestamp_start": timestamp_start})
 
-def save_to_mysql(task_name, cpu_usage, gpu_data_list, timestamp, time_stamp_insert):
+        if not domains:
+            return "N/A"
+        time.sleep(sample_interval)
+
+        total_power_w = 0.0
+        for domain in domains:
+            with open(domain["path"], "r") as f:
+                energy_end = int(f.read().strip())
+            timestamp_end = time.time()
+            delta_time = timestamp_end - domain["timestamp_start"]
+            if delta_time <= 0:
+                continue  # 避免除以零或负数
+            
+            delta_energy_uj = energy_end - domain["energy_start"]
+
+            # 处理计数器溢出（RAPL 能量计数器为 32/64 位无符号）
+            if delta_energy_uj < 0:
+                max_energy_path = os.path.join(os.path.dirname(domain["path"]), "max_energy_range_uj")
+                if os.path.exists(max_energy_path):
+                    with open(max_energy_path, "r") as f:
+                        max_energy = int(f.read().strip())
+                    delta_energy_uj += max_energy + 1
+            
+            power_w = (delta_energy_uj * 1e-6) / delta_time  # μJ → J → W
+            total_power_w += power_w
+        return total_power_w if total_power_w > 0 else "N/A"
+    
+    except Exception as e:
+        logging.error(f"Error getting CPU power info: {e}")
+        return "N/A"
+
+def get_dram_usage_info():
+    """
+    获取DRAM使用情况
+    返回:
+    float: DRAM使用率
+    """
+    try:
+        info = psutil.virtual_memory()
+        dram_usage = info.percent
+        return dram_usage
+    except Exception as e:
+        logging.error(f"Error getting DRAM usage info: {e}")
+        return None
+
+def get_dram_power_info(sample_interval=0.1):
+    """
+    获取 DRAM 功耗（两次采样差值计算，单位：瓦特）
+    参数:sample_interval (float): 采样间隔（秒）
+    返回:float: 平均功耗（瓦特）或 "N/A" 表示无法获取功耗
+    """
+    try:
+        powercap_path = "/sys/class/powercap"
+        if not os.path.exists(powercap_path):
+            return "N/A"
+        
+        domains = []
+        for entry in os.listdir(powercap_path):
+            domain_path = os.path.join(powercap_path, entry)
+            name_path = os.path.join(domain_path, "name")
+            if os.path.exists(name_path):
+                with open(name_path, "r") as f:
+                    name = f.read().strip()
+                if name == "dram":
+                    energy_path = os.path.join(domain_path, "energy_uj")
+                    if os.path.exists(energy_path):
+                        with open(energy_path, "r") as f:
+                            energy_start = int(f.read().strip())
+                        domains.append({
+                            "path": energy_path,
+                            "energy_start": energy_start,
+                            "timestamp_start": time.time()
+                        })
+        
+        if not domains:
+            return "N/A"
+        time.sleep(sample_interval)
+        
+        total_power_w = 0.0
+        for domain in domains:
+            with open(domain["path"], "r") as f:
+                energy_end = int(f.read().strip())
+            timestamp_end = time.time()
+            delta_time = timestamp_end - domain["timestamp_start"]
+            if delta_time <= 0:
+                continue
+            delta_energy_uj = energy_end - domain["energy_start"]
+            
+            # 处理计数器溢出（RAPL 能量计数器为无符号）
+            if delta_energy_uj < 0:
+                max_energy_path = os.path.join(os.path.dirname(domain["path"]), "max_energy_range_uj")
+                if os.path.exists(max_energy_path):
+                    with open(max_energy_path, "r") as f:
+                        max_energy = int(f.read().strip())
+                    delta_energy_uj += max_energy + 1
+            
+            # 计算功耗（单位：瓦特）
+            power_w = (delta_energy_uj * 1e-6) / delta_time  # μJ → J → W
+            total_power_w += power_w
+        
+        return total_power_w if total_power_w > 0 else "N/A"
+    
+    except Exception as e:
+        logging.error(f"Error getting DRAM power info: {e}", exc_info=True)
+        return "N/A"
+    
+
+def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, time_stamp_insert):
     """
     将数据保存到MySQL数据库
     参数:
@@ -199,9 +338,12 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, timestamp, time_stamp_ins
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Timestamp of data entry',
             task_name VARCHAR(50) COMMENT 'Name of the task being monitored',
             cpu_usage VARCHAR(50) COMMENT 'CPU usage percentage',
+            cpu_power_draw VARCHAR(50) COMMENT 'Power draw of the CPU in watts',
+            dram_usage VARCHAR(50) COMMENT 'DRAM usage percentage',
+            dram_power_draw VARCHAR(50) COMMENT 'Power draw of the DRAM in watts',
             gpu_name VARCHAR(50) COMMENT 'Name of the GPU',
             gpu_index INT COMMENT 'Index of the GPU',
-            power_draw VARCHAR(50) COMMENT 'Power draw of the GPU in watts',
+            gpu_power_draw VARCHAR(50) COMMENT 'Power draw of the GPU in watts',
             utilization_gpu VARCHAR(50) COMMENT 'GPU utilization percentage',
             utilization_memory VARCHAR(50) COMMENT 'Memory utilization percentage of the GPU',
             pcie_link_gen_current VARCHAR(50) COMMENT 'Current PCIe generation of the link',
@@ -227,9 +369,9 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, timestamp, time_stamp_ins
 
         # 插入数据
         insert_query = f"""
-        INSERT INTO {table_name}(timestamp, task_name, cpu_usage, gpu_name, gpu_index, power_draw, utilization_gpu, utilization_memory,
+        INSERT INTO {table_name}(timestamp, task_name, cpu_usage, cpu_power_draw, dram_usage, dram_power_draw, gpu_name, gpu_index, gpu_power_draw, utilization_gpu, utilization_memory,
                                 pcie_link_gen_current, pcie_link_width_current, temperature_gpu, temperature_memory, sm, clocks_gr, clocks_mem)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         for gpu_info in gpu_data_list:
             
@@ -242,7 +384,10 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, timestamp, time_stamp_ins
             data = (
                 time_stamp_insert,                               
                 task_name,                                       
-                f"{cpu_usage:.2f} %",                            
+                f"{cpu_usage:.2f} %",
+                f"{other_metrics[0]:.2f} W", 
+                f"{other_metrics[1]:.2f} W",
+                f"{other_metrics[2]:.2f} %",                           
                 f"{gpu_info.get('name', '')}",                        
                 int(gpu_info.get('index', 0)),                   
                 f"{gpu_info.get('power.draw [W]', '')}",              
@@ -270,7 +415,7 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, timestamp, time_stamp_ins
     except Exception as e:
         logging.error(f"Unexpected error in save_to_mysql: {e}")
 
-def save_to_csv(task_name, cpu_usage, gpu_data_list, timestamp, time_stamp_insert):
+def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, time_stamp_insert):
     """
     将数据保存到CSV文件
     参数:
@@ -292,8 +437,8 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, timestamp, time_stamp_inser
         with open(filename, mode=write_mode, newline='', encoding='utf-8') as csvfile:
             # 字段顺序与MySQL表结构完全对应
             fieldnames = [
-                'timestamp', 'task_name', 'cpu_usage', 'gpu_name', 'gpu_index', 
-                'power_draw', 'utilization_gpu', 'utilization_memory', 
+                'timestamp', 'task_name', 'cpu_usage', 'cpu_power_draw', 'dram_usage', 'dram_power_draw', 'gpu_name', 'gpu_index', 
+                'gpu_power_draw', 'utilization_gpu', 'utilization_memory', 
                 'pcie_link_gen_current', 'pcie_link_width_current', 
                 'temperature_gpu', 'temperature_memory', 'sm', 'clocks_gr', 'clocks_mem'
             ]
@@ -318,9 +463,12 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, timestamp, time_stamp_inser
                     'timestamp': time_stamp_insert,
                     'task_name': task_name,
                     'cpu_usage': f"{cpu_usage:.2f} %",
+                    'cpu_power_draw': f"{other_metrics[0]:.2f} W",
+                    'dram_power_draw': f"{other_metrics[1]:.2f} W",
+                    'dram_usage': f"{other_metrics[2]:.2f} %",
                     'gpu_name': f"{gpu_info.get('name', 'N/A')}",
                     'gpu_index': int(gpu_info.get('index', 0)),
-                    'power_draw': f"{gpu_info.get('power.draw [W]', 'N/A')}",
+                    'gpu_power_draw': f"{gpu_info.get('power.draw [W]', 'N/A')}",
                     'utilization_gpu': f"{gpu_info.get('utilization.gpu [%]', 'N/A')}",
                     'utilization_memory': f"{gpu_info.get('utilization.memory [%]', 'N/A')}",
                     'pcie_link_gen_current': f"{gpu_info.get('pcie.link.gen.current', 'N/A')}",
@@ -479,7 +627,7 @@ def fetch_and_plot_data(table_name, format):
 
             # 构建动态查询
             query = f"""
-            SELECT timestamp, task_name, cpu_usage, gpu_name, gpu_index, power_draw, utilization_gpu, utilization_memory, pcie_link_gen_current, pcie_link_width_current, temperature_gpu, temperature_memory, sm, clocks_gr, clocks_mem
+            SELECT timestamp, task_name, cpu_usage, cpu_power_draw, dram_usage, dram_power_draw, gpu_name, gpu_index, gpu_power_draw, utilization_gpu, utilization_memory, pcie_link_gen_current, pcie_link_width_current, temperature_gpu, temperature_memory, sm, clocks_gr, clocks_mem
             FROM {table_name}
             ORDER BY timestamp DESC;
             """
@@ -525,7 +673,10 @@ def fetch_and_plot_data(table_name, format):
     try:
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df['cpu_usage'] = df['cpu_usage'].astype(str).str.replace(' %', '', regex=False).astype(float)
-        df['power_draw'] = df['power_draw'].astype(str).str.replace(' W', '', regex=False).astype(float)
+        df['cpu_power_draw'] = df['cpu_power_draw'].astype(str).str.replace(' W', '', regex=False).astype(float)
+        df['dram_usage'] = df['dram_usage'].astype(str).str.replace(' %', '', regex=False).astype(float)
+        df['dram_power_draw'] = df['dram_power_draw'].astype(str).str.replace(' W', '', regex=False).astype(float)
+        df['gpu_power_draw'] = df['power_draw'].astype(str).str.replace(' W', '', regex=False).astype(float)
         df['utilization_gpu'] = df['utilization_gpu'].astype(str).str.replace(' %', '', regex=False).astype(float)
         df['utilization_memory'] = df['utilization_memory'].astype(str).str.replace(' %', '', regex=False).astype(float)
         df['temperature_gpu'] = df['temperature_gpu'].astype(str).str.replace(' °C', '', regex=False)
@@ -558,7 +709,7 @@ def fetch_and_plot_data(table_name, format):
         # 展示 GPU 专属指标（功率、利用率、温度、SM 使用率）
         fig.add_trace(go.Scatter(
             x=df_gpu['timestamp'],
-            y=df_gpu['power_draw'],
+            y=df_gpu['gpu_power_draw'],
             mode='lines',
             name=f'{gpu_label} Power Draw (W)'
         ))
@@ -612,6 +763,27 @@ def fetch_and_plot_data(table_name, format):
             y=df['cpu_usage'],
             mode='lines',
             name='CPU Usage (%)'
+        ))
+    if 'cpu_power_draw' in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'],
+            y=df['cpu_power_draw'],
+            mode='lines',
+            name='CPU Power Draw (W)'
+        ))
+    if 'dram_usage' in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'],
+            y=df['dram_usage'],
+            mode='lines',
+            name='DRAM Usage (%)'
+        ))
+    if 'dram_power_draw' in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'],
+            y=df['dram_power_draw'],
+            mode='lines',
+            name='DRAM Power Draw (W)'
         ))
     if 'pcie_link_gen_current' in df.columns:
         fig.add_trace(go.Scatter(
