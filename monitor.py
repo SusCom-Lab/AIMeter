@@ -380,13 +380,20 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
             temp_memory = gpu_info.get("temperature.memory", "N/A")
             sm_val = gpu_info.get("sm", "N/A")
 
+            # 如果为N/A，则显示为N/A，否则显示为浮点数
+            cpu_power_draw = f"{other_metrics[0]:.2f} W" if other_metrics[0] != 'N/A' else 'N/A'
+            dram_power_draw = f"{other_metrics[1]:.2f} W" if other_metrics[1] != 'N/A' else 'N/A'
+            
+
             # 构建数据元组，每个元素对应一列数据
             data = (
                 time_stamp_insert,                               
                 task_name,                                       
                 f"{cpu_usage:.2f} %",
-                f"{other_metrics[0]:.2f} W", 
-                f"{other_metrics[1]:.2f} W",
+
+                cpu_power_draw, 
+                dram_power_draw,
+                
                 f"{other_metrics[2]:.2f} %",                           
                 f"{gpu_info.get('name', '')}",                        
                 int(gpu_info.get('index', 0)),                   
@@ -459,12 +466,16 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
                 temp_memory = gpu_info.get('temperature.memory', 'N/A')
                 sm_val = gpu_info.get('sm', 'N/A')
                 
+                # 如果为N/A，则显示为N/A，否则显示为浮点数
+                cpu_power_draw = f"{other_metrics[0]:.2f} W" if other_metrics[0] != 'N/A' else 'N/A'
+                dram_power_draw = f"{other_metrics[1]:.2f} W" if other_metrics[1] != 'N/A' else 'N/A'
+
                 row = {
                     'timestamp': time_stamp_insert,
                     'task_name': task_name,
                     'cpu_usage': f"{cpu_usage:.2f} %",
-                    'cpu_power_draw': f"{other_metrics[0]:.2f} W",
-                    'dram_power_draw': f"{other_metrics[1]:.2f} W",
+                    'cpu_power_draw': cpu_power_draw,
+                    'dram_power_draw': dram_power_draw,
                     'dram_usage': f"{other_metrics[2]:.2f} %",
                     'gpu_name': f"{gpu_info.get('name', 'N/A')}",
                     'gpu_index': int(gpu_info.get('index', 0)),
