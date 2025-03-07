@@ -14,7 +14,7 @@ Energy Consumption Monitoring Tool
 
 **Results**: A highly available energy monitoring system with the following technical specifications:
 
-- Supports 1-second data collection precision
+- Supports 0.1-second data collection precision (The level of granularity depends on the number of GPUs and their performance)
 - Compatible with the entire range of NVIDIA GPUs (based on nvidia-smi standardized output parsing)
 - Optimized MySQL batch writing (transaction commit frequency adjustable, with a daily average record processing capacity of tens of millions per table)
 - Generates interactive HTML visualization reports (based on Plotly dynamic charts, supporting multi-dimensional data comparison)
@@ -24,7 +24,7 @@ Energy Consumption Monitoring Tool
 ## Overall Implementation
 
 ### Flowchart
-![image.png](image.png)
+![image1.png](image1.png)
 
 ### 1. Monitoring Data Collection Module
 **GPU Metrics Collection**: Use subprocess to call the nvidia-smi command-line tool and parse the following key parameters:
@@ -32,17 +32,23 @@ Energy Consumption Monitoring Tool
 ```Python
 # Core monitoring metrics
 GPU_QUERY_FIELDS = [
-    "name", "index", "power.draw", "utilization.gpu", 
-    "utilization.memory", "temperature.gpu", "temperature.memory",
-    "clocks.gr", "clocks.mem",
-    "pcie.link.width.current", "pcie.link.width.current", "sm"]
+    "task_name", "cpu_usage", "cpu_power_draw", "dram_usage", "dram_power_draw", "gpu_name",
+    "gpu_index", "gpu_power_draw", "utilization_gpu", "utilization_memory", "pcie_link_gen_current",
+    "pcie_link_width_current", "temperature_gpu", "temperature_memory", "sm", "clocks_gr", "clocks_mem"]
 ```
 
-**CPU Metrics Collection**: Use the psutil library to implement multi-core utilization statistics:
+**CPU & DRAM Metrics Collection**: Use the psutil library and RAPL interface to implement multi-core utilization statistics:
 
 ```Python
 def get_cpu_info():
-    return psutil.cpu_percent(interval=1, percpu=False)  # Global average utilization
+    return psutil.cpu_percent(interval=0.05, percpu=False)  # Global average utilization
+```
+
+```Python
+def get_cpu_power_info(sample_interval=0.05):
+    try:
+        powercap_path = "/sys/class/powercap" # RAPL interface
+        ......
 ```
 
 ### 2. Data Storage Module
@@ -78,6 +84,8 @@ fig.add_trace(go.Scatter(
     hovertemplate="<b>%{x}</b><br>Power: %{y}W"
 ))
 ```
+
+![image2.png](image2.png)
 
 ## Project Usage Instructions
 

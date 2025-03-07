@@ -34,6 +34,7 @@ Note: Currently, the recorded CPU and GPU utilization and power data are for a s
 - `requirements.txt`: Dependencies.
 - `UserManual.md`: User manual.
 - `Readme.md`: Project documentation.
+- `test.py`: Test script for monitoring.
 
 ## Usage
 
@@ -49,11 +50,21 @@ If MySQL connection-related issues arise during execution, upgrade MySQL:
 
 ### Step 3: Run the script to monitor, passing the task execution command
 
-Note: The script needs to run on the server to be monitored.
+Note: The script needs to run on the server to be monitored. 
+
+Note: For the metrics `cpu_power_draw` and `dram_power_draw`, they are accessed via the RAPL interface. If the values are retrieved as `N/A`, administrator permission is required to grant read access. The files that need permission modifications are as follows:  
+
+```bash
+(llama) (base) hhz@node2:~/workspace/LLM$ ls /sys/class/powercap
+dtpm  intel-rapl  intel-rapl:0  intel-rapl:0:0  intel-rapl:1  intel-rapl:1:0
+```  
+
+The read permissions need to be modified for the following files: `intel-rapl:0`, `intel-rapl:0:0`, `intel-rapl:1` and `intel-rapl:1:0`.
+
 
 Run the script to submit the task and start monitoring:
 ```bash
-python monitor.py monitor -n "task_name" -t 1/10/... -cmd "Command to execute for the task" -o "csv/mysql"
+python monitor.py monitor -n "task_name" -t 0.5/1/3/... -cmd "Command to execute for the task" -o "csv/mysql"
 ```
 
 Parameters:
