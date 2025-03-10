@@ -43,7 +43,7 @@ def run_task(command):
     int: 命令的退出码
     """
     try:
-        process = subprocess.Popen(command, shell=True)
+        process = subprocess.Popen(command, shell=False)
         process.wait()
         return process.returncode
     except Exception as e:
@@ -139,14 +139,16 @@ def get_gpu_info():
     """
     command = "nvidia-smi --query-gpu=name,index,power.draw,utilization.gpu,utilization.memory,pcie.link.gen.current,pcie.link.width.current,temperature.gpu,temperature.memory,clocks.gr,clocks.mem --format=csv"
     try:
-        result = subprocess.check_output(command, shell=True).decode('utf-8')
+        result = subprocess.check_output(command, shell=False).decode('utf-8')
         lines = result.strip().split("\n")
-        headers = lines[0].split(", ")
+        # 对每个header进行strip去除多余空白和换行符
+        headers = [header.strip() for header in lines[0].split(",")]
         gpu_data_list = []
         for line in lines[1:]:
             if not line.strip():
                 continue
-            values = line.split(", ")
+            # 同样对每个value进行strip处理
+            values = [value.strip() for value in line.split(",")]
             gpu_data = {}
             for i, header in enumerate(headers):
                 gpu_data[header] = values[i]
@@ -167,7 +169,7 @@ def get_sm_info():
     """
     command_sm_info = "nvidia-smi dmon -s u -c 1"
     try:
-        result_sm_info = subprocess.check_output(command_sm_info, shell=True).decode('utf-8')
+        result_sm_info = subprocess.check_output(command_sm_info, shell=False).decode('utf-8')
         lines_sm_info = result_sm_info.strip().split("\n")
         header_line_sm_info = None
         for line in lines_sm_info:
