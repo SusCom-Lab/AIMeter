@@ -12,9 +12,15 @@ import plotly.io as pio  # 导入io模块来保存为HTML文件
 import threading
 from datetime import datetime
 from deprecated import deprecated
+from typing import Callable, Optional, Dict
+import functools
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pynvml
-from .test import timing_decorator, monitor_resources, execution_times, get_average_time, get_max_time
+import shlex
+
+# 用于保存每个函数的执行时间
+execution_times = {}
+execution_times['elapsed_time'] = []
 
 # 数据库连接配置信息
 class Config:
@@ -34,7 +40,139 @@ logging.basicConfig(
 # 全局变量，用于记录插入的记录数
 inserted_count = -1
 
-def run_task(command):
+# 用于计算函数的执行时间
+def timing_decorator(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()  # 记录开始时间
+        result = func(*args, **kwargs)  # 调用原函数
+        end_time = time.time()  # 记录结束时间
+        execution_time = end_time - start_time  # 计算执行时间
+
+        # 记录每次执行的时间
+        if func.__name__ not in execution_times:
+            execution_times[func.__name__] = []
+        execution_times[func.__name__].append(execution_time)
+        
+        print(f"Function '{func.__name__}' executed in {execution_time:.4f} seconds")
+        return result
+    return wrapper
+
+# 用于获取函数的平均执行时间
+def get_average_time(func_name):
+    if func_name in execution_times:
+        times = execution_times[func_name]
+        average_time = sum(times) / len(times)
+        return average_time
+    else:
+        return None
+    
+# 用于获取函数的最大执行时间
+def get_max_time(func_name):
+    if func_name in execution_times:
+        return max(execution_times[func_name])
+    else:
+        return None
+    
+def monitor_resources(
+    log_file: str = "resource_monitor.log",
+    monitor_cpu: bool = True,
+    monitor_mem: bool = True,
+    monitor_disk: bool = True,
+    disk_device: str = "sda3"
+):
+    """
+    监控函数运行时资源占用的装饰器工厂
+    Args:
+        log_file: 监控日志文件路径
+        monitor_cpu: 是否监控CPU
+        monitor_mem: 是否监控内存
+        monitor_disk: 是否监控磁盘
+        disk_device: 监控的磁盘设备名
+    """
+    def decorator(func: Callable):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            # 初始化监控数据
+            process = psutil.Process()
+            disk_before = psutil.disk_io_counters(perdisk=True).get(disk_device, None)
+            cpu_samples = []
+            mem_samples = []
+
+            # 启动后台采样线程
+            def sampler(stop_event):
+                while not stop_event.is_set():
+                    if monitor_cpu:
+                        cpu_samples.append(process.cpu_percent(interval=0.1))
+                    if monitor_mem:
+                        mem_samples.append(process.memory_info().rss)
+                    time.sleep(0.5)  # 每0.5秒采样一次
+
+            stop_event = threading.Event()
+            sampler_thread = threading.Thread(target=sampler, args=(stop_event,))
+            sampler_thread.start()
+
+            # 执行目标函数
+            start_time = time.time()
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                # 停止采样并计算指标
+                stop_event.set()
+                sampler_thread.join(timeout=1)
+                duration = time.time() - start_time
+
+                # 收集最终数据
+                disk_after = psutil.disk_io_counters(perdisk=True).get(disk_device, None)
+                
+                # 计算统计指标
+                stats = {
+                    "function": func.__name__,
+                    "duration": f"{duration:.2f}s",
+                    "cpu_avg": None,
+                    "cpu_max": None,
+                    "mem_avg": None,
+                    "mem_max": None,
+                    "disk_read": None,
+                    "disk_write": None
+                }
+
+                if monitor_cpu and cpu_samples:
+                    stats.update({
+                        "cpu_avg": f"{sum(cpu_samples)/len(cpu_samples):.1f}%",
+                        "cpu_max": f"{max(cpu_samples):.1f}%"
+                    })
+
+                if monitor_mem and mem_samples:
+                    stats.update({
+                        "mem_avg": f"{sum(mem_samples)/len(mem_samples)/1024/1024:.1f}MB",
+                        "mem_max": f"{max(mem_samples)/1024/1024:.1f}MB"
+                    })
+
+                if monitor_disk and disk_before and disk_after:
+                    stats.update({
+                        "disk_read": f"{(disk_after.read_bytes - disk_before.read_bytes)/1024/1024:.1f}MB",
+                        "disk_write": f"{(disk_after.write_bytes - disk_before.write_bytes)/1024/1024:.1f}MB"
+                    })
+
+                # 记录日志
+                log_message = (
+                    f"Resource Report - {func.__name__}\n"
+                    f"Duration: {stats['duration']}\n"
+                    f"CPU Usage (avg/max): {stats['cpu_avg']} / {stats['cpu_max']}\n"
+                    f"Memory Usage (avg/max): {stats['mem_avg']} / {stats['mem_max']}\n"
+                    f"Disk I/O (read/write): {stats['disk_read']} / {stats['disk_write']}\n"
+                    "----------------------------------------"
+                )
+                with open(log_file, "a") as f:
+                    f.write(log_message + "\n")
+                logging.info(f"Resource usage logged to {log_file}")
+
+            return result
+        return wrapper
+    return decorator
+
+@deprecated(version='1.0', reason="shell为True")
+def run_task_1(command):
     """
     执行指定的命令并等待其完成。
     参数:
@@ -43,22 +181,40 @@ def run_task(command):
     int: 命令的退出码
     """
     try:
-        process = subprocess.Popen(command, shell=False)
+        process = subprocess.Popen(command, shell=True)
+        process.wait()
+        return process.returncode
+    except Exception as e:
+        logging.error(f"Error running task command: {e}")
+        return -1
+    
+# shell为False
+def run_task(command):
+    """
+    执行指定的命令并等待其完成。
+    参数:
+    command (str): 要执行的命令（字符串形式）
+    返回:
+    int: 命令的退出码
+    """
+    try:
+        # 将命令字符串拆分为列表 windows可以不做拆分
+        cmd_list = shlex.split(command)
+        process = subprocess.Popen(cmd_list, shell=False)
         process.wait()
         return process.returncode
     except Exception as e:
         logging.error(f"Error running task command: {e}")
         return -1
 
-# 以下做注释的装饰器用于测量工具开销
-# @timing_decorator
-# @monitor_resources(
-#     log_file="monitor_stats.log",
-#     monitor_cpu=True,
-#     monitor_mem=True,
-#     monitor_disk=False,
-#     disk_device="nvme0n1"  # 根据实际磁盘设备修改
-# )
+## @timing_decorator
+@monitor_resources(
+    log_file="monitor_stats.log",
+    monitor_cpu=True,
+    monitor_mem=True,
+    monitor_disk=False,
+    disk_device="nvme0n1"  # 根据实际磁盘设备修改
+)
 def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format="csv"):
     """
     监控CPU和GPU的使用情况并将数据保存到MySQL或者CSV。
@@ -69,6 +225,7 @@ def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format
     stop_event (threading.Event): 用于停止监控的事件
     output_format (str): 输出格式（默认为CSV）
     """
+    # time_interval = time_interval - 1
     while not stop_event.is_set():
         try:
             start_time = time.time() # 记录开始时间
@@ -89,7 +246,7 @@ def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format
                 time.sleep(time_interval)
                 continue
             
-            # 其余指标
+            # 后续处理保持不变...
             other_metrics = [metrics["cpu_power"], metrics["dram_power"], metrics["dram_usage"]]
 
             if output_format == "csv":
@@ -137,18 +294,24 @@ def get_gpu_info():
     """
     获取基本GPU信息，返回一个字典列表，每个字典包含一个GPU的信息
     """
-    command = "nvidia-smi --query-gpu=name,index,power.draw,utilization.gpu,utilization.memory,pcie.link.gen.current,pcie.link.width.current,temperature.gpu,temperature.memory,clocks.gr,clocks.mem --format=csv"
+    # 适合为True，否则为False
+    # command = "nvidia-smi --query-gpu=name,index,power.draw,utilization.gpu,utilization.memory,pcie.link.gen.current,pcie.link.width.current,temperature.gpu,temperature.memory,clocks.gr,clocks.mem,clocks.current.sm --format=csv"
+    command = [
+        "nvidia-smi",
+        "--query-gpu=name,index,power.draw,utilization.gpu,utilization.memory,"
+        "pcie.link.gen.current,pcie.link.width.current,temperature.gpu,"
+        "temperature.memory,clocks.gr,clocks.mem,clocks.current.sm",
+        "--format=csv"
+    ]
     try:
         result = subprocess.check_output(command, shell=False).decode('utf-8')
         lines = result.strip().split("\n")
-        # 对每个header进行strip去除多余空白和换行符
-        headers = [header.strip() for header in lines[0].split(",")]
+        headers = lines[0].split(", ")
         gpu_data_list = []
         for line in lines[1:]:
             if not line.strip():
                 continue
-            # 同样对每个value进行strip处理
-            values = [value.strip() for value in line.split(",")]
+            values = line.split(", ")
             gpu_data = {}
             for i, header in enumerate(headers):
                 gpu_data[header] = values[i]
@@ -161,51 +324,51 @@ def get_gpu_info():
         logging.error(f"Unexpected error in run_basic_info: {e}")
         return []
 
-# @timing_decorator
-def get_sm_info():
-    """
-    获取sm信息，执行命令：nvidia-smi dmon -s u -c 1
-    返回一个字典，key为GPU索引，value为sm对应的值
-    """
-    command_sm_info = "nvidia-smi dmon -s u -c 1"
-    try:
-        result_sm_info = subprocess.check_output(command_sm_info, shell=False).decode('utf-8')
-        lines_sm_info = result_sm_info.strip().split("\n")
-        header_line_sm_info = None
-        for line in lines_sm_info:
-            if line.startswith("# gpu") and "sm" in line:
-                header_line_sm_info = line
-                break
+# # @timing_decorator
+# def get_sm_info():
+#     """
+#     获取sm信息，执行命令：nvidia-smi dmon -s u -c 1
+#     返回一个字典，key为GPU索引，value为sm对应的值
+#     """
+#     command_sm_info = "nvidia-smi dmon -s u -c 1"
+#     try:
+#         result_sm_info = subprocess.check_output(command_sm_info, shell=False).decode('utf-8')
+#         lines_sm_info = result_sm_info.strip().split("\n")
+#         header_line_sm_info = None
+#         for line in lines_sm_info:
+#             if line.startswith("# gpu") and "sm" in line:
+#                 header_line_sm_info = line
+#                 break
 
-        sm_data = {}
-        if header_line_sm_info:
-            headers_sm_info = header_line_sm_info.split()
-            sm_index = None
-            for index, header in enumerate(headers_sm_info):
-                if header == "sm":
-                    sm_index = index - 1  # 由于标题行以'#'开头，实际数据的索引需要减1
-                    break
-            # 遍历数据行，提取sm信息
-            for line in lines_sm_info:
-                if not line.strip():
-                    continue
-                values_sm_info = line.split()
-                if values_sm_info[0].startswith('#'):
-                    continue
-                try:
-                    gpu_index = int(values_sm_info[0])
-                except ValueError:
-                    continue
-                # 保存sm字段的值
-                if sm_index is not None and sm_index < len(values_sm_info):
-                    sm_data[gpu_index] = values_sm_info[sm_index]
-        return sm_data
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Error running sm command: {e}")
-        return {}
-    except Exception as e:
-        logging.error(f"Unexpected error in run_sm_info: {e}")
-        return {}
+#         sm_data = {}
+#         if header_line_sm_info:
+#             headers_sm_info = header_line_sm_info.split()
+#             sm_index = None
+#             for index, header in enumerate(headers_sm_info):
+#                 if header == "sm":
+#                     sm_index = index - 1  # 由于标题行以'#'开头，实际数据的索引需要减1
+#                     break
+#             # 遍历数据行，提取sm信息
+#             for line in lines_sm_info:
+#                 if not line.strip():
+#                     continue
+#                 values_sm_info = line.split()
+#                 if values_sm_info[0].startswith('#'):
+#                     continue
+#                 try:
+#                     gpu_index = int(values_sm_info[0])
+#                 except ValueError:
+#                     continue
+#                 # 保存sm字段的值
+#                 if sm_index is not None and sm_index < len(values_sm_info):
+#                     sm_data[gpu_index] = values_sm_info[sm_index]
+#         return sm_data
+#     except subprocess.CalledProcessError as e:
+#         logging.error(f"Error running sm command: {e}")
+#         return {}
+#     except Exception as e:
+#         logging.error(f"Unexpected error in run_sm_info: {e}")
+#         return {}
 
 @deprecated(version='1.0', reason="串行实现，效率低下")
 def get_gpu_info_1():
@@ -377,14 +540,14 @@ def get_cpu_usage_info():
     float: CPU使用率
     """
     try:
-        cpu_usage = psutil.cpu_percent(interval=0.05)
+        cpu_usage = psutil.cpu_percent(interval=0.050)
         return cpu_usage
     except Exception as e:
         logging.error(f"Error getting CPU info: {e}")
         return None
 
 # @timing_decorator
-def get_cpu_power_info(sample_interval=0.05):
+def get_cpu_power_info(sample_interval=0.050):
     """
     获取 CPU 功耗（两次采样差值计算，单位：瓦特）
     参数:sample_interval (float): 采样间隔（秒）
@@ -526,14 +689,15 @@ def parallel_collect_metrics():
     """
     metrics = {}
     
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         # 创建任务映射
         futures = {
+            # executor.submit(get_gpu_info): "gpu_info", # 影响上限
             executor.submit(get_cpu_usage_info): "cpu_usage",
             executor.submit(get_cpu_power_info): "cpu_power",
             executor.submit(get_dram_power_info): "dram_power",
             executor.submit(get_dram_usage_info): "dram_usage",
-            executor.submit(get_sm_info): "sm_info",
+            # executor.submit(get_sm_info): "sm_info",
             executor.submit(get_gpu_info): "gpu_info"
         }
 
@@ -544,17 +708,17 @@ def parallel_collect_metrics():
                 result = future.result()
                 if key == 'gpu_info':
                     gpu_data_list = result
-                elif key == 'sm_info':
-                    sm_data = result
+                # elif key == 'sm_info':
+                #     sm_data = result
                 else:
                     metrics[key] = result
             except Exception as e:
                 logging.warning(f"Failed to collect metric: {key} - {str(e)}")
                 metrics[key] = None
 
-        for gpu_index, gpu_data in enumerate(gpu_data_list):
-            if gpu_index in sm_data:
-                gpu_data["sm"] = sm_data[gpu_index]
+        # for gpu_index, gpu_data in enumerate(gpu_data_list):
+        #     if gpu_index in sm_data:
+        #         gpu_data["sm"] = sm_data[gpu_index]
             
         metrics['gpu_info'] = gpu_data_list
 
@@ -604,9 +768,10 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
             pcie_link_width_current VARCHAR(50) COMMENT 'Current width of the PCIe link',
             temperature_gpu VARCHAR(50) COMMENT 'Temperature of the GPU in Celsius',
             temperature_memory VARCHAR(50) COMMENT 'Temperature of the GPU memory in Celsius',
-            sm VARCHAR(50) COMMENT 'SM (Streaming Multiprocessor) utilization or status',
+
             clocks_gr VARCHAR(50) COMMENT 'Graphics clock frequency',
-            clocks_mem VARCHAR(50) COMMENT 'Memory clock frequency'
+            clocks_mem VARCHAR(50) COMMENT 'Memory clock frequency',
+            clocks_sm VARCHAR(50) COMMENT 'SM clock frequency'
         )
         """
         cursor.execute(create_table_query)
@@ -624,7 +789,7 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
         # 插入数据
         insert_query = f"""
         INSERT INTO {table_name}(timestamp, task_name, cpu_usage, cpu_power_draw, dram_usage, dram_power_draw, gpu_name, gpu_index, gpu_power_draw, utilization_gpu, utilization_memory,
-                                pcie_link_gen_current, pcie_link_width_current, temperature_gpu, temperature_memory, sm, clocks_gr, clocks_mem)
+                                pcie_link_gen_current, pcie_link_width_current, temperature_gpu, temperature_memory, clocks_gr, clocks_mem, clocks_sm)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         for gpu_info in gpu_data_list:
@@ -632,36 +797,31 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
             #  GPU温度可能不可用
             temp_gpu = gpu_info.get("temperature.gpu", "N/A")
             temp_memory = gpu_info.get("temperature.memory", "N/A")
-            sm_val = gpu_info.get("sm", "N/A")
+            # sm_val = gpu_info.get("sm", "N/A")
 
-            # 如果为N/A，则显示为N/A，否则显示为浮点数
-            cpu_power_draw = f"{other_metrics[0]:.2f} W" if other_metrics[0] != 'N/A' else 'N/A'
-            dram_power_draw = f"{other_metrics[1]:.2f} W" if other_metrics[1] != 'N/A' else 'N/A'
-            
             # 构建数据元组，每个元素对应一列数据
             data = (
                 time_stamp_insert,                               
                 task_name,                                       
                 f"{cpu_usage:.2f} %",
-                
-                cpu_power_draw, 
-                dram_power_draw,
-                
+                f"{other_metrics[0]:.2f} W", 
+                f"{other_metrics[1]:.2f} W",
                 f"{other_metrics[2]:.2f} %",                           
-                f"{gpu_info.get('name', 'N/A')}",                        
+                f"{gpu_info.get('name', '')}",                        
                 int(gpu_info.get('index', 0)),                   
-                f"{gpu_info.get('power.draw [W]', 'N/A')}",              
-                f"{gpu_info.get('utilization.gpu [%]', 'N/A')}",         
-                f"{gpu_info.get('utilization.memory [%]', 'N/A')}",      
-                f"{gpu_info.get('pcie.link.gen.current', 'N/A')}",       
-                f"{gpu_info.get('pcie.link.width.current', 'N/A')}",     
+                f"{gpu_info.get('power.draw [W]', '')}",              
+                f"{gpu_info.get('utilization.gpu [%]', '')}",         
+                f"{gpu_info.get('utilization.memory [%]', '')}",      
+                f"{gpu_info.get('pcie.link.gen.current', '')}",       
+                f"{gpu_info.get('pcie.link.width.current', '')}",     
 
                 f"{temp_gpu} °C" if temp_gpu != "N/A" else "N/A",
                 f"{temp_memory} °C" if temp_memory != "N/A" else "N/A",
-                f"{sm_val} %" if sm_val != "N/A" else "N/A",
+                # f"{sm_val} %" if sm_val != "N/A" else "N/A",
 
-                f"{gpu_info.get('clocks.current.graphics [MHz]', 'N/A')}",
-                f"{gpu_info.get('clocks.current.memory [MHz]', 'N/A')}"
+                f"{gpu_info.get('clocks.current.graphics [MHz]', '')}",
+                f"{gpu_info.get('clocks.current.memory [MHz]', '')}",
+                f"{gpu_info.get('clocks.current.sm [MHz]', '')}"
             )
             cursor.execute(insert_query, data)
             inserted_count += 1
@@ -675,7 +835,7 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
     except Exception as e:
         logging.error(f"Unexpected error in save_to_mysql: {e}")
 
-@timing_decorator
+# @timing_decorator
 def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, time_stamp_insert):
     """
     将数据保存到CSV文件
@@ -701,7 +861,7 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
                 'timestamp', 'task_name', 'cpu_usage', 'cpu_power_draw', 'dram_usage', 'dram_power_draw', 'gpu_name', 'gpu_index', 
                 'gpu_power_draw', 'utilization_gpu', 'utilization_memory', 
                 'pcie_link_gen_current', 'pcie_link_width_current', 
-                'temperature_gpu', 'temperature_memory', 'sm', 'clocks_gr', 'clocks_mem'
+                'temperature_gpu', 'temperature_memory', 'clocks_gr', 'clocks_mem', 'clocks_sm'
             ]
             
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -743,10 +903,11 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
 
                     'temperature_gpu': f"{temp_gpu} °C" if temp_gpu != 'N/A' else "N/A",
                     'temperature_memory': f"{temp_memory} °C" if temp_memory != 'N/A' else "N/A",
-                    'sm': f"{sm_val} %" if sm_val != 'N/A' else "N/A",
+                    # 'sm': f"{sm_val} %" if sm_val != 'N/A' else "N/A",
 
                     'clocks_gr': f"{gpu_info.get('clocks.current.graphics [MHz]', 'N/A')}",
-                    'clocks_mem': f"{gpu_info.get('clocks.current.memory [MHz]', 'N/A')}"
+                    'clocks_mem': f"{gpu_info.get('clocks.current.memory [MHz]', 'N/A')}",
+                    'clocks_sm': f"{gpu_info.get('clocks.current.sm [MHz]', 'N/A')}"
                 }
                 writer.writerow(row)
                 inserted_count += 1
@@ -895,7 +1056,7 @@ def fetch_and_plot_data(table_name, format):
 
             # 构建动态查询
             query = f"""
-            SELECT timestamp, task_name, cpu_usage, cpu_power_draw, dram_usage, dram_power_draw, gpu_name, gpu_index, gpu_power_draw, utilization_gpu, utilization_memory, pcie_link_gen_current, pcie_link_width_current, temperature_gpu, temperature_memory, sm, clocks_gr, clocks_mem
+            SELECT timestamp, task_name, cpu_usage, cpu_power_draw, dram_usage, dram_power_draw, gpu_name, gpu_index, gpu_power_draw, utilization_gpu, utilization_memory, pcie_link_gen_current, pcie_link_width_current, temperature_gpu, temperature_memory, clocks_gr, clocks_mem, clocks_sm
             FROM {table_name}
             ORDER BY timestamp DESC;
             """
@@ -949,11 +1110,12 @@ def fetch_and_plot_data(table_name, format):
         df['utilization_memory'] = df['utilization_memory'].astype(str).str.replace(' %', '', regex=False).astype(float)
         df['temperature_gpu'] = df['temperature_gpu'].astype(str).str.replace(' °C', '', regex=False)
         df['temperature_memory'] = df['temperature_memory'].astype(str).str.replace(' °C', '', regex=False)
-        df['sm'] = df['sm'].astype(str).str.replace(' %', '', regex=False).astype(float)
+        # df['sm'] = df['sm'].astype(str).str.replace(' %', '', regex=False).astype(float)
         df['pcie_link_gen_current'] = pd.to_numeric(df['pcie_link_gen_current'], errors='coerce')
         df['pcie_link_width_current'] = pd.to_numeric(df['pcie_link_width_current'], errors='coerce')
         df['clocks_gr'] = df['clocks_gr'].astype(str).str.replace(' MHz', '', regex=False)
         df['clocks_mem'] = df['clocks_mem'].astype(str).str.replace(' MHz', '', regex=False)
+        df['clocks_sm'] = df['clocks_sm'].astype(str).str.replace(' MHz', '', regex=False)
 
     except Exception as e:
         logging.error(f"Error during data processing: {e}")
@@ -1005,12 +1167,12 @@ def fetch_and_plot_data(table_name, format):
             mode='lines',
             name=f'{gpu_label} Memory Temperature (°C)'
         ))
-        fig.add_trace(go.Scatter(
-            x=df_gpu['timestamp'],
-            y=df_gpu['sm'],
-            mode='lines',
-            name=f'{gpu_label} SM (%)'
-        ))
+        # fig.add_trace(go.Scatter(
+        #     x=df_gpu['timestamp'],
+        #     y=df_gpu['sm'],
+        #     mode='lines',
+        #     name=f'{gpu_label} SM (%)'
+        # ))
         fig.add_trace(go.Scatter(
             x=df_gpu['timestamp'],
             y=df_gpu['clocks_gr'],
@@ -1022,6 +1184,12 @@ def fetch_and_plot_data(table_name, format):
             y=df_gpu['clocks_mem'],
             mode='lines',
             name=f'{gpu_label} Memory Clock (MHz)'
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_gpu['timestamp'],
+            y=df_gpu['clocks_sm'],
+            mode='lines',
+            name=f'{gpu_label} SM Clock (MHz)'
         ))
 
     # 针对机器级别的数据（例如CPU使用率和PCIe相关指标），因为在每条记录中可能重复出现，所以只需添加一次
@@ -1141,7 +1309,7 @@ def main():
 if __name__ == "__main__":
     main()
     
-    # # 获取平均时间 (以下代码用于测试)
+    # # 获取平均时间
     # print(f"'get_gpu_info': Average time {get_average_time('get_gpu_info'):.4f} seconds | Max time {get_max_time('get_gpu_info'):.4f} seconds")
     # print(f"'get_sm_info': Average time {get_average_time('get_sm_info'):.4f} seconds | Max time {get_max_time('get_sm_info'):.4f} seconds")
     # print(f"'get_cpu_usage_info': Average time {get_average_time('get_cpu_usage_info'):.4f} seconds | Max time {get_max_time('get_cpu_usage_info'):.4f} seconds")
