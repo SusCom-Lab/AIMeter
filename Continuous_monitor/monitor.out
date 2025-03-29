@@ -1,0 +1,6 @@
+持续监控已启动，数据将保存至: monitor_data/continuous_monitor_20250329_175137.csv
+按 Ctrl+C 停止监控
+
+正在停止监控系统...
+监控已停止，共采集 40 个样本
+数据已保存至: monitor_data/continuous_monitor_20250329_175137.csv
