@@ -58,12 +58,11 @@ chmod +x start_monitor.sh stop_monitor.sh
 您也可以直接运行Python脚本，并设置自定义参数：
 
 ```bash
-python continuous_monitor.py -i 3 -p 10
+python continuous_monitor.py -i 3
 ```
 
 参数说明：
-- `-i, --interval`: 采样间隔，单位为秒（默认为5秒）
-- `-p, --plot_interval`: 生成图表的间隔（采样次数），默认为12次（约1分钟）
+- `-i, --interval`: 采样间隔，单位为秒（默认为1秒）
 
 ## 输出文件
 

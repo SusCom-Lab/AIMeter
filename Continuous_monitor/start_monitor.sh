@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# 注意：如果您还没有激活conda环境，请先运行：
-# conda activate gpu_dp_opt
-
 # 检查 python 是否存在
 command -v python >/dev/null 2>&1 || { echo "需要 python 命令，但未找到。请检查环境。"; exit 1; }
 

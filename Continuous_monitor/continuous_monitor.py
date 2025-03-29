@@ -108,7 +108,7 @@ def save_to_csv(metrics, csv_file, time_stamp):
     except Exception as e:
         logging.error(f"保存到CSV时出错: {e}")
 
-def continuous_monitor(interval, plot_interval):
+def continuous_monitor(interval):
     """
     持续监控系统资源
     
@@ -177,14 +177,13 @@ def continuous_monitor(interval, plot_interval):
 
 def main():
     parser = argparse.ArgumentParser(description="持续监控系统资源")
-    parser.add_argument("-i", "--interval", type=float, default=5,
-                      help="采样间隔（秒），默认5秒")
-    parser.add_argument("-p", "--plot_interval", type=int, default=12,
-                      help="生成图表的间隔（采样次数），默认12次（约1分钟）")
+    parser.add_argument("-i", "--interval", type=float, default=1,
+                      help="采样间隔（秒），默认1秒")
+    
     
     args = parser.parse_args()
     
-    continuous_monitor(args.interval, args.plot_interval)
+    continuous_monitor(args.interval)
 
 if __name__ == "__main__":
     main() 
