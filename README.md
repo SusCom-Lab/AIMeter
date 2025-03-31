@@ -93,5 +93,7 @@ fig.add_trace(go.Scatter(
 **待更新**
 
 1、函数`calculate_metrics`针对多gpu的情况的更新
+
 2、每次运行的结果存入到`monitor_stats.log`中（引用`calculate_metrics`）
+
 3、是否有统一日志输出和控制台输出的必要性
