@@ -14,8 +14,8 @@ from datetime import datetime
 from deprecated import deprecated
 from typing import Callable, Optional, Dict
 import functools
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import pynvml
 import shlex
 
 # 用于保存每个函数的执行时间
@@ -39,6 +39,122 @@ logging.basicConfig(
 
 # 全局变量，用于记录插入的记录数
 inserted_count = -1
+
+def calculate_metrics(file_path):
+    # 读取CSV文件
+    df = pd.read_csv(file_path)
+    # 将 "N/A" 替换为 NaN，不删除整行
+    df.replace("N/A", np.nan, inplace=True)
+    # 转换时间戳为 datetime 格式
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    # 计算总时间（秒）
+    total_time = (df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]).total_seconds()
+
+    # 将百分比和单位去掉并转换为数值（遇到无法转换的保持为 NaN）
+    for col in ['cpu_usage', 'cpu_power_draw', 'dram_usage', 'dram_power_draw', 
+                'gpu_power_draw', 'utilization_gpu', 'utilization_memory', 
+                'temperature_gpu', 'temperature_memory', 'clocks_gr', 'clocks_mem', 'clocks_sm']:
+        if col in df.columns:
+            # 如果列的数据类型为 object，则进行字符串替换，否则跳过
+            if df[col].dtype == object:
+                df[col] = df[col].str.replace(r'[^\d.]', '', regex=True)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # 定义各列对应的单位（根据实际情况调整）
+    unit_map = {
+        'cpu_usage': ' %',
+        'cpu_power_draw': ' W',
+        'dram_usage': ' %',
+        'dram_power_draw': ' W',
+        'gpu_power_draw': ' W',
+        'utilization_gpu': ' %',
+        'utilization_memory': ' %',
+        'temperature_gpu': ' °C',
+        'temperature_memory': ' °C',
+        'clocks_gr': ' MHz',
+        'clocks_mem': ' MHz',
+        'clocks_sm': ' MHz'
+    }
+
+    def compute_stat(series, unit):
+        """计算平均、最大、最小、众数，若整列全为 NaN则返回 'N/A'"""
+        if series.dropna().empty:
+            return {'mean': 'N/A', 'max': 'N/A', 'min': 'N/A', 'mode': 'N/A'}
+        else:
+            mode_series = series.mode(dropna=True)
+            mode_val = f"{mode_series.iloc[0]:.2f}{unit}" if not mode_series.empty else "N/A"
+            return {
+                'mean': f"{series.mean(skipna=True):.2f}{unit}",
+                'max': f"{series.max(skipna=True):.2f}{unit}",
+                'min': f"{series.min(skipna=True):.2f}{unit}",
+                'mode': mode_val
+            }
+
+    # 计算各列的统计信息
+    stats = {}
+    for col in df.columns:
+        if col not in ['timestamp', 'task_name', 'gpu_name', 'gpu_index']:
+            unit = unit_map.get(col, '')
+            stats[col] = compute_stat(df[col], unit)
+
+    # 计算能耗：增加对全为 NaN 的判断
+    df['time_interval'] = df['timestamp'].diff().dt.total_seconds().fillna(0)
+    
+    # CPU 能耗
+    if df['cpu_power_draw'].dropna().empty:
+        cpu_energy = 'N/A'
+    else:
+        cpu_energy_val = (df['cpu_power_draw'] * df['time_interval']).sum(skipna=True)
+        cpu_energy = f"{cpu_energy_val:.2f} J"
+    
+    # DRAM 能耗
+    if df['dram_power_draw'].dropna().empty:
+        dram_energy = 'N/A'
+    else:
+        dram_energy_val = (df['dram_power_draw'] * df['time_interval']).sum(skipna=True)
+        dram_energy = f"{dram_energy_val:.2f} J"
+    
+    energy_consumption = {
+        'cpu_energy': cpu_energy,
+        'dram_energy': dram_energy,
+        'gpu_energy': {}
+    }
+
+    # 按 GPU 计算能耗（若该 GPU 组数据全为 NaN，则返回 'N/A'）
+    for gpu_index in df['gpu_index'].dropna().unique():
+        gpu_data = df[df['gpu_index'] == gpu_index]
+        if gpu_data['gpu_power_draw'].dropna().empty:
+            energy_consumption['gpu_energy'][gpu_index] = 'N/A'
+        else:
+            gpu_energy_val = (gpu_data['gpu_power_draw'] * gpu_data['time_interval']).sum(skipna=True)
+            energy_consumption['gpu_energy'][gpu_index] = f"{gpu_energy_val:.2f} J"
+
+    # 计算总能耗：只累加非 'N/A' 的值
+    total = 0.0
+    valid = False
+
+    if cpu_energy != 'N/A':
+        total += float(cpu_energy.split()[0])
+        valid = True
+
+    if dram_energy != 'N/A':
+        total += float(dram_energy.split()[0])
+        valid = True
+
+    for val in energy_consumption['gpu_energy'].values():
+        if val != 'N/A':
+            total += float(val.split()[0])
+            valid = True
+
+    total_energy = f"{total:.2f} J" if valid else 'N/A'
+    energy_consumption['total_energy'] = total_energy
+
+    # 输出结果， 总时间附带单位秒
+    return {
+        'stats': stats,
+        'total_time': f"{total_time:.2f} 秒",
+        'energy_consumption': energy_consumption
+    }
 
 # 用于计算函数的执行时间
 def timing_decorator(func):
@@ -170,23 +286,6 @@ def monitor_resources(
             return result
         return wrapper
     return decorator
-
-@deprecated(version='1.0', reason="shell为True")
-def run_task_1(command):
-    """
-    执行指定的命令并等待其完成。
-    参数:
-    command (str): 要执行的命令
-    返回:
-    int: 命令的退出码
-    """
-    try:
-        process = subprocess.Popen(command, shell=True)
-        process.wait()
-        return process.returncode
-    except Exception as e:
-        logging.error(f"Error running task command: {e}")
-        return -1
     
 # shell为False
 def run_task(command):
@@ -255,26 +354,6 @@ def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format
             elif output_format == "mysql":
                 save_to_mysql(task_name, metrics["cpu_usage"], metrics["gpu_info"], 
                              other_metrics, timestamp, time_stamp_insert)
-            
-            # 串行实现，效率低下
-            # gpu_info = get_gpu_info()
-            # cpu_usage = get_cpu_usage_info()
-            # cpu_power = get_cpu_power_info()
-            # dram_power = get_dram_power_info()
-            # dram_usage = get_dram_usage_info()
-            # if not gpu_info:
-            #     logging.warning("No GPU info available, skipping data collection.")
-            #     time.sleep(time_interval)
-            #     continue
-            # if cpu_usage is None:
-            #     logging.warning("Failed to get CPU info, skipping data collection.")
-            #     time.sleep(time_interval)
-            #     continue
-            # other_metrics = [cpu_power, dram_power, dram_usage]
-            # if output_format == "csv":
-            #     save_to_csv(task_name, cpu_usage, gpu_info, other_metrics, timestamp, time_stamp_insert)
-            # elif output_format == "mysql":
-            #     save_to_mysql(task_name, cpu_usage, gpu_info, other_metrics, timestamp, time_stamp_insert)
 
             if inserted_count % 10 == 0 or inserted_count == 1:
                 logging.info(f"Total records inserted so far: {inserted_count}")
@@ -323,214 +402,6 @@ def get_gpu_info():
     except Exception as e:
         logging.error(f"Unexpected error in run_basic_info: {e}")
         return []
-
-# # @timing_decorator
-# def get_sm_info():
-#     """
-#     获取sm信息，执行命令：nvidia-smi dmon -s u -c 1
-#     返回一个字典，key为GPU索引，value为sm对应的值
-#     """
-#     command_sm_info = "nvidia-smi dmon -s u -c 1"
-#     try:
-#         result_sm_info = subprocess.check_output(command_sm_info, shell=False).decode('utf-8')
-#         lines_sm_info = result_sm_info.strip().split("\n")
-#         header_line_sm_info = None
-#         for line in lines_sm_info:
-#             if line.startswith("# gpu") and "sm" in line:
-#                 header_line_sm_info = line
-#                 break
-
-#         sm_data = {}
-#         if header_line_sm_info:
-#             headers_sm_info = header_line_sm_info.split()
-#             sm_index = None
-#             for index, header in enumerate(headers_sm_info):
-#                 if header == "sm":
-#                     sm_index = index - 1  # 由于标题行以'#'开头，实际数据的索引需要减1
-#                     break
-#             # 遍历数据行，提取sm信息
-#             for line in lines_sm_info:
-#                 if not line.strip():
-#                     continue
-#                 values_sm_info = line.split()
-#                 if values_sm_info[0].startswith('#'):
-#                     continue
-#                 try:
-#                     gpu_index = int(values_sm_info[0])
-#                 except ValueError:
-#                     continue
-#                 # 保存sm字段的值
-#                 if sm_index is not None and sm_index < len(values_sm_info):
-#                     sm_data[gpu_index] = values_sm_info[sm_index]
-#         return sm_data
-#     except subprocess.CalledProcessError as e:
-#         logging.error(f"Error running sm command: {e}")
-#         return {}
-#     except Exception as e:
-#         logging.error(f"Unexpected error in run_sm_info: {e}")
-#         return {}
-
-@deprecated(version='1.0', reason="串行实现，效率低下")
-def get_gpu_info_1():
-    """
-    获取GPU信息
-    返回:
-    list: 包含GPU信息的字典列表
-    """
-    command = [
-        "nvidia-smi --query-gpu=name,index,power.draw,utilization.gpu,utilization.memory,pcie.link.gen.current,pcie.link.width.current,temperature.gpu,temperature.memory,clocks.gr,clocks.mem  --format=csv"
-    ]
-    try:
-        # start_time = time.time()
-        result = subprocess.check_output(command, shell=True).decode('utf-8')
-        # end_time = time.time()
-        # print(f"basic:{end_time-start_time:.4f}")
-        lines = result.strip().split("\n")
-        headers = lines[0].split(", ")
-        gpu_data_list = []
-        line_num = 1
-        while line_num < len(lines) and lines[line_num].strip():
-            gpu_data = {}
-            values = lines[line_num].split(", ")
-            for i, header in enumerate(headers):
-                gpu_data[header] = values[i]
-            gpu_data_list.append(gpu_data)
-            line_num += 1
-
-        # 构建用于获取包含sm信息的命令
-        command_sm_info = ["nvidia-smi dmon -s u -c 1"]  # -s u表示按更新频率排序，-c 1表示只获取1次数据更新
-        result_sm_info = subprocess.check_output(command_sm_info, shell=True).decode('utf-8')
-        lines_sm_info = result_sm_info.strip().split("\n")
-
-        # start_time2 = time.time()
-        # 找到包含'sm'字段的标题行
-        header_line_sm_info = None
-        for line in lines_sm_info:
-            if line.startswith("# gpu") and "sm" in line:
-                header_line_sm_info = line
-                break
-        
-        if header_line_sm_info:
-            headers_sm_info = header_line_sm_info.split()
-            sm_index = None
-            for index, header in enumerate(headers_sm_info):
-                if header == "sm":
-                    sm_index = index - 1  # 由于标题行以'#'开头，因此实际数据行的索引要减1
-                    break
-            # 从数据行中提取'sm'对应的值添加到之前获取的gpu_data字典中，适配不同数量的GPU
-            data_line_num = 0
-            while data_line_num < len(lines_sm_info) and lines_sm_info[data_line_num].strip():
-                values_sm_info = lines_sm_info[data_line_num].split()
-                # 添加判断条件，跳过以'#'开头的数据行
-                if values_sm_info[0].startswith('#'):
-                    data_line_num += 1
-                    continue
-                gpu_index = int(values_sm_info[0])
-                if gpu_index < len(gpu_data_list):
-                    gpu_data_list[gpu_index]["sm"] = values_sm_info[sm_index]
-                data_line_num += 1
-
-        # end_time2 = time.time()
-        # print(f"sm:{end_time2-start_time2:.4f}")
-
-        return gpu_data_list
-
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Error getting GPU info: {e}")
-        return []
-    except Exception as e:
-        logging.error(f"Unexpected error in get_gpu_info: {e}")
-        return []
-
-@deprecated(version='2.0', reason="使用pynvml,有些信息采集不到")
-def get_gpu_info_2():
-    """
-    获取GPU信息
-    返回:
-    list: 包含GPU信息的字典列表
-    """
-    try:
-        pynvml.nvmlInit()
-    except Exception as e:
-        print("NVML 初始化失败:", e)
-        return []
-    
-    gpu_data_list = []
-    gpu_count = pynvml.nvmlDeviceGetCount()
-    
-    for i in range(gpu_count):
-        
-        start_time = time.time()
-        gpu_data = {}
-        # GPU 名称
-        # 功率 (单位：瓦特，NVML 返回单位为毫瓦特)
-        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-        name = pynvml.nvmlDeviceGetName(handle)
-        gpu_data["name"] = name
-        gpu_data["index"] = i
-        gpu_data["power.draw"] = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
-        utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
-        gpu_data["utilization.gpu"] = utilization.gpu
-        gpu_data["utilization.memory"] = utilization.memory
-        gpu_data["pcie.link.gen.current"] = pynvml.nvmlDeviceGetCurrPcieLinkGeneration(handle)
-        gpu_data["pcie.link.width.current"] = pynvml.nvmlDeviceGetCurrPcieLinkWidth(handle)
-        gpu_data["temperature.gpu"] = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-        gpu_data["temperature.memory"] = "N/A"
-        gpu_data["clocks.gr"] = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS)
-        gpu_data["clocks.mem"] = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
-        
-        print(gpu_data)
-        
-        end_time = time.time()
-        print(end_time-start_time)
-        
-        # sm 信息暂时不在这里赋值，后面将通过原有逻辑获取
-        gpu_data_list.append(gpu_data)
-    pynvml.nvmlShutdown()
-
-    start_time2 = time.time()
-    # 使用原来的逻辑获取 sm 信息
-    command_sm_info = "nvidia-smi dmon -s u -c 1"
-    try:
-        result_sm_info = subprocess.check_output(command_sm_info, shell=True).decode('utf-8')
-        lines_sm_info = result_sm_info.strip().split("\n")
-        header_line_sm_info = None
-        # 寻找包含 'sm' 字段的标题行
-        for line in lines_sm_info:
-            if line.startswith("# gpu") and "sm" in line:
-                header_line_sm_info = line
-                break
-        
-        if header_line_sm_info:
-            headers_sm_info = header_line_sm_info.split()
-            sm_index = None
-            for index, header in enumerate(headers_sm_info):
-                if header == "sm":
-                    sm_index = index - 1  # 由于标题行以 '#' 开头，数据行的索引需要减1
-                    break
-            # 遍历数据行，提取 sm 信息并加入对应的 GPU 字典中
-            for line in lines_sm_info:
-                if not line.strip():
-                    continue
-                values_sm_info = line.split()
-                if values_sm_info[0].startswith("#"):
-                    continue
-                try:
-                    gpu_index = int(values_sm_info[0])
-                    if gpu_index < len(gpu_data_list) and sm_index is not None and sm_index < len(values_sm_info):
-                        gpu_data_list[gpu_index]["sm"] = values_sm_info[sm_index]
-                except Exception:
-                    continue
-    except Exception as e:
-        print("获取 sm 信息出错:", e)
-        # 若出错则为每个 GPU 的 sm 字段赋值为 N/A
-        for gpu_data in gpu_data_list:
-            gpu_data["sm"] = "N/A"
-    
-    end_time2 = time.time()
-    print(end_time2-start_time2)
-    
-    return gpu_data_list
 
 # @timing_decorator
 def get_cpu_usage_info():
@@ -692,12 +563,10 @@ def parallel_collect_metrics():
     with ThreadPoolExecutor(max_workers=5) as executor:
         # 创建任务映射
         futures = {
-            # executor.submit(get_gpu_info): "gpu_info", # 影响上限
             executor.submit(get_cpu_usage_info): "cpu_usage",
             executor.submit(get_cpu_power_info): "cpu_power",
             executor.submit(get_dram_power_info): "dram_power",
             executor.submit(get_dram_usage_info): "dram_usage",
-            # executor.submit(get_sm_info): "sm_info",
             executor.submit(get_gpu_info): "gpu_info"
         }
 
@@ -715,10 +584,6 @@ def parallel_collect_metrics():
             except Exception as e:
                 logging.warning(f"Failed to collect metric: {key} - {str(e)}")
                 metrics[key] = None
-
-        # for gpu_index, gpu_data in enumerate(gpu_data_list):
-        #     if gpu_index in sm_data:
-        #         gpu_data["sm"] = sm_data[gpu_index]
             
         metrics['gpu_info'] = gpu_data_list
 
@@ -835,7 +700,6 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
     except Exception as e:
         logging.error(f"Unexpected error in save_to_mysql: {e}")
 
-# @timing_decorator
 def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, time_stamp_insert):
     """
     将数据保存到CSV文件
@@ -849,8 +713,12 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
     try:
         global inserted_count
 
+        # 定义保存数据的目录
+        save_dir = os.path.join(os.path.dirname(__file__), 'monitor_data')
+        os.makedirs(save_dir, exist_ok=True)  # 如果目录不存在，则创建
+        
         # 生成标准化文件名
-        filename = f"{task_name}_{timestamp}.csv"
+        filename = os.path.join(save_dir, f"{task_name}_{timestamp}.csv")
         
         # 数据写入模式（追加模式）
         write_mode = 'a' if os.path.exists(filename) else 'w'
@@ -878,7 +746,6 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
                 # GPU温度可能不可用
                 temp_gpu = gpu_info.get('temperature.gpu', 'N/A')
                 temp_memory = gpu_info.get('temperature.memory', 'N/A')
-                sm_val = gpu_info.get('sm', 'N/A')
 
                 # 如果为N/A，则显示为N/A，否则显示为浮点数
                 cpu_power_draw = f"{other_metrics[0]:.2f} W" if other_metrics[0] != 'N/A' else 'N/A'
@@ -891,23 +758,19 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
 
                     'cpu_power_draw': cpu_power_draw,
                     'dram_power_draw': dram_power_draw,
-
                     'dram_usage': f"{other_metrics[2]:.2f} %",
-                    'gpu_name': f"{gpu_info.get('name', 'N/A')}",
+                    'gpu_name': gpu_info.get('name', 'N/A'),
                     'gpu_index': int(gpu_info.get('index', 0)),
-                    'gpu_power_draw': f"{gpu_info.get('power.draw [W]', 'N/A')}",
-                    'utilization_gpu': f"{gpu_info.get('utilization.gpu [%]', 'N/A')}",
-                    'utilization_memory': f"{gpu_info.get('utilization.memory [%]', 'N/A')}",
-                    'pcie_link_gen_current': f"{gpu_info.get('pcie.link.gen.current', 'N/A')}",
-                    'pcie_link_width_current': f"{gpu_info.get('pcie.link.width.current', 'N/A')}",
-
+                    'gpu_power_draw': gpu_info.get('power.draw [W]', 'N/A'),
+                    'utilization_gpu': gpu_info.get('utilization.gpu [%]', 'N/A'),
+                    'utilization_memory': gpu_info.get('utilization.memory [%]', 'N/A'),
+                    'pcie_link_gen_current': gpu_info.get('pcie.link.gen.current', 'N/A'),
+                    'pcie_link_width_current': gpu_info.get('pcie.link.width.current', 'N/A'),
                     'temperature_gpu': f"{temp_gpu} °C" if temp_gpu != 'N/A' else "N/A",
                     'temperature_memory': f"{temp_memory} °C" if temp_memory != 'N/A' else "N/A",
-                    # 'sm': f"{sm_val} %" if sm_val != 'N/A' else "N/A",
-
-                    'clocks_gr': f"{gpu_info.get('clocks.current.graphics [MHz]', 'N/A')}",
-                    'clocks_mem': f"{gpu_info.get('clocks.current.memory [MHz]', 'N/A')}",
-                    'clocks_sm': f"{gpu_info.get('clocks.current.sm [MHz]', 'N/A')}"
+                    'clocks_gr': gpu_info.get('clocks.current.graphics [MHz]', 'N/A'),
+                    'clocks_mem': gpu_info.get('clocks.current.memory [MHz]', 'N/A'),
+                    'clocks_sm': gpu_info.get('clocks.current.sm [MHz]', 'N/A')
                 }
                 writer.writerow(row)
                 inserted_count += 1
@@ -918,123 +781,6 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
         logging.error(f"CSV formatting error: {ce}")
     except Exception as e:
         logging.error(f"Unexpected error in save_to_csv: {str(e)}")
-
-@deprecated(version='1.0', reason="只能处理单个GPU的数据，不适用于多GPU的情况")
-def fetch_and_plot_data_1(table_name, format):
-    """
-    从MySQL数据库或csv文件中检索数据并绘制图表
-    参数:
-    table_name (str): 数据表名称
-    format (str): 输入格式（mysql或csv）
-    """
-    if format == "mysql":
-        try:
-            mydb = mysql.connector.connect(
-                host=Config.host,
-                user=Config.user,
-                password=Config.password,
-                database=Config.database
-            )
-            cursor = mydb.cursor()
-
-            # 构建动态查询
-            query = f"""
-            SELECT timestamp, power_draw, utilization_gpu, utilization_memory, temperature_gpu, temperature_memory, cpu_usage, sm, pcie_link_gen_current, pcie_link_width_current
-            FROM {table_name}
-            ORDER BY timestamp DESC;
-            """
-            cursor.execute(query)
-
-            # 将查询结果加载到Pandas DataFrame中
-            # 获取列名
-            columns = [col[0] for col in cursor.description]  
-            data = cursor.fetchall()
-            if not data:
-                logging.warning(f"No data found in table {table_name}.")
-                return
-
-            df = pd.DataFrame(data, columns=columns)
-        except mysql.connector.Error as err:
-            logging.error(f"Database error: {err}")
-            return
-        except Exception as e:
-            logging.error(f"Unexpected error: {e}")
-            return
-        finally:
-            if 'cursor' in locals():
-                cursor.close()
-            if 'mydb' in locals():
-                mydb.close()
-
-    elif format == "csv":
-        try:
-            # 获取当前脚本所在的目录
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            # 构建文件路径（与当前文件同级目录）
-            file_path = os.path.join(current_dir, table_name)
-
-            # 从CSV文件读取数据
-            df = pd.read_csv(file_path)
-            if df.empty:
-                logging.warning(f"No data found in file {file_path}.")
-                return
-
-        except Exception as e:
-            logging.error(f"Unexpected error while reading CSV file: {e}")
-            return
-    
-    # 数据预处理
-    try:
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df['power_draw'] = df['power_draw'].astype(str).str.replace(' W', '', regex=False).astype(float)
-        df['utilization_gpu'] = df['utilization_gpu'].astype(str).str.replace(' %', '', regex=False).astype(float)
-        df['utilization_memory'] = df['utilization_memory'].astype(str).str.replace(' %', '', regex=False).astype(float)
-        df['temperature_gpu'] = df['temperature_gpu'].astype(str).str.replace(' °C', '', regex=False).astype(float)
-        df['temperature_memory'] = df['temperature_memory'].astype(str).str.replace(' °C', '', regex=False).astype(float)
-        df['cpu_usage'] = df['cpu_usage'].astype(str).str.replace(' %', '', regex=False).astype(float)
-        df['sm'] = df['sm'].astype(str).str.replace(' %', '', regex=False).astype(float)
-        df['pcie_generation'] = pd.to_numeric(df['pcie_link_gen_current'], errors='coerce')
-        df['pcie_width'] = pd.to_numeric(df['pcie_link_width_current'], errors='coerce')
-    except Exception as e:
-        logging.error(f"Error during data processing: {e}")
-        return
-
-    # 创建图表
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['power_draw'], mode='lines', name='GPU Power Draw (W)'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['utilization_gpu'], mode='lines', name='GPU Utilization (%)'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['utilization_memory'], mode='lines', name='GPU Memory Utilization (%)'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['temperature_gpu'], mode='lines', name='GPU Temperature (°C)'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['temperature_memory'], mode='lines', name='GPU Memory Temperature (°C)'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['cpu_usage'], mode='lines', name='CPU Usage (%)'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['sm'], mode='lines', name='GPU SM (%)'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['pcie_generation'], mode='lines', name='GPU PCIe Generation'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['pcie_width'], mode='lines', name='GPU PCIe Width'))
-
-    # 设置图表标题和轴标签
-    fig.update_layout(
-        title=f"Interactive GPU Metrics for {table_name}",
-        xaxis_title="Timestamp",
-        yaxis_title="Metrics",
-        legend_title="Legend",
-        template="plotly_white"
-    )
-
-    # 保存图表为HTML文件
-    output_dir = "monitor_graphs"
-    output_file = os.path.join(output_dir, f"{table_name}_metrics.html")
-
-    # 确保目录存在
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        logging.info(f"Directory '{output_dir}' created.")
-
-    try:
-        fig.show()  # 直接显示图表
-        pio.write_html(fig, file=output_file)
-        logging.info(f"Chart saved as {output_file}")
-    except Exception as e:
-        logging.error(f"Failed to save chart: {e}")
 
 # @timing_decorator
 def fetch_and_plot_data(table_name, format):
@@ -1110,7 +856,6 @@ def fetch_and_plot_data(table_name, format):
         df['utilization_memory'] = df['utilization_memory'].astype(str).str.replace(' %', '', regex=False).astype(float)
         df['temperature_gpu'] = df['temperature_gpu'].astype(str).str.replace(' °C', '', regex=False)
         df['temperature_memory'] = df['temperature_memory'].astype(str).str.replace(' °C', '', regex=False)
-        # df['sm'] = df['sm'].astype(str).str.replace(' %', '', regex=False).astype(float)
         df['pcie_link_gen_current'] = pd.to_numeric(df['pcie_link_gen_current'], errors='coerce')
         df['pcie_link_width_current'] = pd.to_numeric(df['pcie_link_width_current'], errors='coerce')
         df['clocks_gr'] = df['clocks_gr'].astype(str).str.replace(' MHz', '', regex=False)
@@ -1167,12 +912,6 @@ def fetch_and_plot_data(table_name, format):
             mode='lines',
             name=f'{gpu_label} Memory Temperature (°C)'
         ))
-        # fig.add_trace(go.Scatter(
-        #     x=df_gpu['timestamp'],
-        #     y=df_gpu['sm'],
-        #     mode='lines',
-        #     name=f'{gpu_label} SM (%)'
-        # ))
         fig.add_trace(go.Scatter(
             x=df_gpu['timestamp'],
             y=df_gpu['clocks_gr'],
@@ -1284,7 +1023,11 @@ def main():
         stop_event = threading.Event()
         monitor_thread = threading.Thread(target=monitor_stats, args=(args.name, args.time_interval, timestamp, stop_event, args.output))
         monitor_thread.start()
-        
+        # 控制台输出
+        print(f"ECM监控工具已启动，数据将保存至:monitor_data/{args.name}_{timestamp}.csv。")
+        print(f"任务 '{args.Command}' 运行结束后，ECM监控工具将停止运行。")
+        print(f"------------------------------------------------------------------------------------------")
+
         # 运行任务并等待其完成
         exit_code = run_task(args.Command)
 
@@ -1297,8 +1040,46 @@ def main():
         # 根据任务的退出码来记录日志
         if exit_code == 0:
             logging.info(f"Task '{args.Command}' completed successfully, data was monitored and saved to table {table_name}")
+            print(f"------------------------------------------------------------------------------------------")
+            print(f"任务 '{args.Command}' 运行结束，退出码: {exit_code}")
         else:
             logging.error(f"Task '{args.Command}' failed with exit code {exit_code}, data was monitored and saved to table {table_name}")
+            print(f"------------------------------------------------------------------------------------------")
+            print(f"任务 '{args.Command}' 运行失败，退出码: {exit_code}")
+        
+        print(f"ECM监控工具已停止运行，共采集{inserted_count}个样本，详细数据已保存至:monitor_data/{args.name}_{timestamp}.csv，简略数据如下：")
+        
+        # 获取当前文件所在目录
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_file_path = os.path.join(current_dir, 'monitor_data', f"{args.name}_{timestamp}.csv")
+
+        metrics = calculate_metrics(csv_file_path)
+        
+        stats = metrics['stats']
+        total_time =  metrics['total_time']
+        energy_consumption = metrics['energy_consumption']
+        print(f"任务 '{args.Command}' 耗时: {total_time}", end="")
+        print(f" | CPU能耗: {energy_consumption['cpu_energy']}", end="")
+              
+        print(f" | DRAM能耗: {energy_consumption['dram_energy']}", end="")
+        for gpu in energy_consumption['gpu_energy']:
+            print(f" | GPU{gpu}能耗: {energy_consumption['gpu_energy'][gpu]}", end="")
+        print(" | 总能耗: ", energy_consumption['total_energy'])
+
+        # 对应的中文键名映射
+        label_map = {
+            'mean': '平均值',
+            'max': '最大值',
+            'min': '最小值',
+            'mode': '众数'
+        }
+        # 遍历 stats 字典并逐行打印
+        for metric, values in stats.items():
+            print(f"{metric}：", end="")
+            details = []
+            for key in ['mean', 'max', 'min', 'mode']:
+                details.append(f"{label_map[key]}: {values.get(key, 'N/A')}")
+            print(", ".join(details))
     
     elif args.command == "plot":
         # 执行画图功能
