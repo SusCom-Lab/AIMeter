@@ -16,7 +16,9 @@ from typing import Callable, Optional, Dict
 import functools
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import pynvml
 import shlex
+import re
 
 # 用于保存每个函数的执行时间
 execution_times = {}
@@ -40,7 +42,19 @@ logging.basicConfig(
 # 全局变量，用于记录插入的记录数
 inserted_count = -1
 
+import pandas as pd
+import numpy as np
+
 def calculate_metrics(file_path):
+    """
+    计算CSV文件中的统计信息和能耗，针对多GPU情况，
+    先按gpu_index分组后再计算GPU相关指标。
+    
+    参数:
+        file_path (str): CSV文件路径
+    返回:
+        dict: 包含CPU/DRAM统计信息、各GPU统计信息、总时间和能耗的字典
+    """
     # 读取CSV文件
     df = pd.read_csv(file_path)
     # 将 "N/A" 替换为 NaN，不删除整行
@@ -49,18 +63,21 @@ def calculate_metrics(file_path):
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     # 计算总时间（秒）
     total_time = (df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]).total_seconds()
-
-    # 将百分比和单位去掉并转换为数值（遇到无法转换的保持为 NaN）
-    for col in ['cpu_usage', 'cpu_power_draw', 'dram_usage', 'dram_power_draw', 
-                'gpu_power_draw', 'utilization_gpu', 'utilization_memory', 
-                'temperature_gpu', 'temperature_memory', 'clocks_gr', 'clocks_mem', 'clocks_sm']:
+    
+    # 定义需要清洗的所有列
+    cols_to_clean = ['cpu_usage', 'cpu_power_draw', 'dram_usage', 'dram_power_draw',
+                     'gpu_power_draw', 'utilization_gpu', 'utilization_memory', 
+                     'pcie_link_gen_current', 'pcie_link_width_current',
+                     'temperature_gpu', 'temperature_memory', 
+                     'clocks_gr', 'clocks_mem', 'clocks_sm']
+    # 清洗：去除百分比、单位等非数值字符，并转换为数值
+    for col in cols_to_clean:
         if col in df.columns:
-            # 如果列的数据类型为 object，则进行字符串替换，否则跳过
             if df[col].dtype == object:
                 df[col] = df[col].str.replace(r'[^\d.]', '', regex=True)
             df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    # 定义各列对应的单位（根据实际情况调整）
+    
+    # 定义单位映射
     unit_map = {
         'cpu_usage': ' %',
         'cpu_power_draw': ' W',
@@ -69,15 +86,17 @@ def calculate_metrics(file_path):
         'gpu_power_draw': ' W',
         'utilization_gpu': ' %',
         'utilization_memory': ' %',
+        'pcie_link_gen_current': '',
+        'pcie_link_width_current': '',
         'temperature_gpu': ' °C',
         'temperature_memory': ' °C',
         'clocks_gr': ' MHz',
         'clocks_mem': ' MHz',
         'clocks_sm': ' MHz'
     }
-
+    
     def compute_stat(series, unit):
-        """计算平均、最大、最小、众数，若整列全为 NaN则返回 'N/A'"""
+        """计算平均、最大、最小、众数；若整列全为NaN则返回 'N/A'"""
         if series.dropna().empty:
             return {'mean': 'N/A', 'max': 'N/A', 'min': 'N/A', 'mode': 'N/A'}
         else:
@@ -89,29 +108,44 @@ def calculate_metrics(file_path):
                 'min': f"{series.min(skipna=True):.2f}{unit}",
                 'mode': mode_val
             }
-
-    # 计算各列的统计信息
-    stats = {}
-    for col in df.columns:
-        if col not in ['timestamp', 'task_name', 'gpu_name', 'gpu_index']:
-            unit = unit_map.get(col, '')
-            stats[col] = compute_stat(df[col], unit)
-
-    # 计算能耗：增加对全为 NaN 的判断
-    df['time_interval'] = df['timestamp'].diff().dt.total_seconds().fillna(0)
     
-    # CPU 能耗
-    if df['cpu_power_draw'].dropna().empty:
+    # 计算 CPU 和 DRAM 相关统计指标
+    cpu_dram_columns = ['cpu_usage', 'cpu_power_draw', 'dram_usage', 'dram_power_draw']
+    cpu_dram_stats = {}
+    for col in cpu_dram_columns:
+        if col in df.columns:
+            unit = unit_map.get(col, '')
+            cpu_dram_stats[col] = compute_stat(df[col], unit)
+    
+    # 对 GPU 相关指标先按 gpu_index 分组后计算
+    gpu_columns = ['gpu_power_draw', 'utilization_gpu', 'utilization_memory',
+                   'pcie_link_gen_current', 'pcie_link_width_current',
+                   'temperature_gpu', 'temperature_memory', 
+                   'clocks_gr', 'clocks_mem', 'clocks_sm']
+    gpu_stats = {}
+    if 'gpu_index' in df.columns:
+        for gpu_idx, group in df.groupby('gpu_index'):
+            gpu_stats[gpu_idx] = {}
+            for col in gpu_columns:
+                if col in group.columns:
+                    unit = unit_map.get(col, '')
+                    gpu_stats[gpu_idx][col] = compute_stat(group[col], unit)
+    
+    # --- 能耗计算部分修改 ---
+    # 为 CPU 和 DRAM 能耗计算先对整体数据按时间戳去重
+    df_unique = df.drop_duplicates(subset=['timestamp']).copy()
+    df_unique['time_interval'] = df_unique['timestamp'].diff().dt.total_seconds().fillna(0)
+    
+    if df_unique['cpu_power_draw'].dropna().empty:
         cpu_energy = 'N/A'
     else:
-        cpu_energy_val = (df['cpu_power_draw'] * df['time_interval']).sum(skipna=True)
+        cpu_energy_val = (df_unique['cpu_power_draw'] * df_unique['time_interval']).sum(skipna=True)
         cpu_energy = f"{cpu_energy_val:.2f} J"
     
-    # DRAM 能耗
-    if df['dram_power_draw'].dropna().empty:
+    if df_unique['dram_power_draw'].dropna().empty:
         dram_energy = 'N/A'
     else:
-        dram_energy_val = (df['dram_power_draw'] * df['time_interval']).sum(skipna=True)
+        dram_energy_val = (df_unique['dram_power_draw'] * df_unique['time_interval']).sum(skipna=True)
         dram_energy = f"{dram_energy_val:.2f} J"
     
     energy_consumption = {
@@ -119,39 +153,36 @@ def calculate_metrics(file_path):
         'dram_energy': dram_energy,
         'gpu_energy': {}
     }
-
-    # 按 GPU 计算能耗（若该 GPU 组数据全为 NaN，则返回 'N/A'）
-    for gpu_index in df['gpu_index'].dropna().unique():
-        gpu_data = df[df['gpu_index'] == gpu_index]
-        if gpu_data['gpu_power_draw'].dropna().empty:
-            energy_consumption['gpu_energy'][gpu_index] = 'N/A'
-        else:
-            gpu_energy_val = (gpu_data['gpu_power_draw'] * gpu_data['time_interval']).sum(skipna=True)
-            energy_consumption['gpu_energy'][gpu_index] = f"{gpu_energy_val:.2f} J"
-
-    # 计算总能耗：只累加非 'N/A' 的值
-    total = 0.0
+    
+    # GPU能耗：对于每个 GPU 按 gpu_index 分组后，先对该组数据按时间戳去重再计算时间间隔
+    if 'gpu_index' in df.columns:
+        for gpu_idx, group in df.groupby('gpu_index'):
+            group_unique = group.drop_duplicates(subset=['timestamp']).copy()
+            group_unique['time_interval'] = group_unique['timestamp'].diff().dt.total_seconds().fillna(0)
+            if group_unique['gpu_power_draw'].dropna().empty:
+                energy_consumption['gpu_energy'][gpu_idx] = 'N/A'
+            else:
+                gpu_energy_val = (group_unique['gpu_power_draw'] * group_unique['time_interval']).sum(skipna=True)
+                energy_consumption['gpu_energy'][gpu_idx] = f"{gpu_energy_val:.2f} J"
+    
+    # 计算总能耗（累加有效的CPU、DRAM和各GPU能耗）
+    total_energy_val = 0.0
     valid = False
-
-    if cpu_energy != 'N/A':
-        total += float(cpu_energy.split()[0])
-        valid = True
-
-    if dram_energy != 'N/A':
-        total += float(dram_energy.split()[0])
-        valid = True
-
+    for energy in [cpu_energy, dram_energy]:
+        if energy != 'N/A':
+            total_energy_val += float(energy.split()[0])
+            valid = True
     for val in energy_consumption['gpu_energy'].values():
         if val != 'N/A':
-            total += float(val.split()[0])
+            total_energy_val += float(val.split()[0])
             valid = True
-
-    total_energy = f"{total:.2f} J" if valid else 'N/A'
+    total_energy = f"{total_energy_val:.2f} J" if valid else 'N/A'
     energy_consumption['total_energy'] = total_energy
-
-    # 输出结果， 总时间附带单位秒
+    # --- 能耗计算结束 ---
+    
     return {
-        'stats': stats,
+        'cpu_dram_stats': cpu_dram_stats,
+        'gpu_stats': gpu_stats,
         'total_time': f"{total_time:.2f} 秒",
         'energy_consumption': energy_consumption
     }
@@ -373,8 +404,6 @@ def get_gpu_info():
     """
     获取基本GPU信息，返回一个字典列表，每个字典包含一个GPU的信息
     """
-    # 适合为True，否则为False
-    # command = "nvidia-smi --query-gpu=name,index,power.draw,utilization.gpu,utilization.memory,pcie.link.gen.current,pcie.link.width.current,temperature.gpu,temperature.memory,clocks.gr,clocks.mem,clocks.current.sm --format=csv"
     command = [
         "nvidia-smi",
         "--query-gpu=name,index,power.draw,utilization.gpu,utilization.memory,"
@@ -682,7 +711,6 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
 
                 f"{temp_gpu} °C" if temp_gpu != "N/A" else "N/A",
                 f"{temp_memory} °C" if temp_memory != "N/A" else "N/A",
-                # f"{sm_val} %" if sm_val != "N/A" else "N/A",
 
                 f"{gpu_info.get('clocks.current.graphics [MHz]', '')}",
                 f"{gpu_info.get('clocks.current.memory [MHz]', '')}",
@@ -699,6 +727,11 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
         logging.error(f"MySQL operation error: {e}")
     except Exception as e:
         logging.error(f"Unexpected error in save_to_mysql: {e}")
+
+# @timing_decorator
+import os
+import csv
+import logging
 
 def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, time_stamp_insert):
     """
@@ -1041,27 +1074,30 @@ def main():
         if exit_code == 0:
             logging.info(f"Task '{args.Command}' completed successfully, data was monitored and saved to table {table_name}")
             print(f"------------------------------------------------------------------------------------------")
-            print(f"任务 '{args.Command}' 运行结束，退出码: {exit_code}")
+            # print(f"任务 '{args.Command}' 运行结束，退出码: {exit_code}")
         else:
             logging.error(f"Task '{args.Command}' failed with exit code {exit_code}, data was monitored and saved to table {table_name}")
             print(f"------------------------------------------------------------------------------------------")
-            print(f"任务 '{args.Command}' 运行失败，退出码: {exit_code}")
+            # print(f"任务 '{args.Command}' 运行失败，退出码: {exit_code}")
         
         print(f"ECM监控工具已停止运行，共采集{inserted_count}个样本，详细数据已保存至:monitor_data/{args.name}_{timestamp}.csv，简略数据如下：")
         
-        # 获取当前文件所在目录
+        # 获取当前文件所在目录，计算指标
         current_dir = os.path.dirname(os.path.abspath(__file__))
         csv_file_path = os.path.join(current_dir, 'monitor_data', f"{args.name}_{timestamp}.csv")
-
         metrics = calculate_metrics(csv_file_path)
-        
-        stats = metrics['stats']
-        total_time =  metrics['total_time']
+
+        # 假设 metrics 是 calculate_metrics 返回的结果
+        cpu_dram_stats = metrics['cpu_dram_stats']
+        gpu_stats = metrics['gpu_stats']
+        total_time = metrics['total_time']
         energy_consumption = metrics['energy_consumption']
+
         print(f"任务 '{args.Command}' 耗时: {total_time}", end="")
         print(f" | CPU能耗: {energy_consumption['cpu_energy']}", end="")
-              
         print(f" | DRAM能耗: {energy_consumption['dram_energy']}", end="")
+
+        # 输出各个 GPU 的能耗
         for gpu in energy_consumption['gpu_energy']:
             print(f" | GPU{gpu}能耗: {energy_consumption['gpu_energy'][gpu]}", end="")
         print(" | 总能耗: ", energy_consumption['total_energy'])
@@ -1073,14 +1109,27 @@ def main():
             'min': '最小值',
             'mode': '众数'
         }
-        # 遍历 stats 字典并逐行打印
-        for metric, values in stats.items():
+
+        # 打印 CPU 和 DRAM 的统计信息
+        print("\n【CPU/DRAM统计信息】")
+        for metric, values in cpu_dram_stats.items():
             print(f"{metric}：", end="")
             details = []
             for key in ['mean', 'max', 'min', 'mode']:
                 details.append(f"{label_map[key]}: {values.get(key, 'N/A')}")
             print(", ".join(details))
-    
+
+        # 打印各 GPU 的统计信息
+        print("\n【GPU统计信息】")
+        for gpu, stats in gpu_stats.items():
+            print(f"GPU{gpu}：")
+            for metric, values in stats.items():
+                print(f"  {metric}：", end="")
+                details = []
+                for key in ['mean', 'max', 'min', 'mode']:
+                    details.append(f"{label_map[key]}: {values.get(key, 'N/A')}")
+                print(", ".join(details))
+        
     elif args.command == "plot":
         # 执行画图功能
         table_name = args.table_name

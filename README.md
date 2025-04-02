@@ -91,8 +91,7 @@ fig.add_trace(go.Scatter(
 有关项目详细使用说明，请参阅[UserManual.md]。
 
 **待更新**
-
-1、函数`calculate_metrics`针对多gpu的情况的更新
+1、`mysql`太久没更新了
 
 2、每次运行的结果存入到`monitor_stats.log`中（引用`calculate_metrics`）
 

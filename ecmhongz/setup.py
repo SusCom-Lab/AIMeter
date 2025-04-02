@@ -2,10 +2,10 @@ from setuptools import setup, find_packages
 
 setup(
     name="ecmhongz",  
-    version="0.2.0",  
+    version="0.2.2",  
     author="HongzhenHuang",
     author_email="202130500072@mail.scut.edn.cn", 
-    description="ecmhong is a Python package for Energy Consumption Monitoring created by HongzhenHuang.",  # 简短描述
+    description="ecmhongz is a Python package for Energy Consumption Monitoring created by HongzhenHuang.",  # 简短描述
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/SusCom-Lab/ECM-Tool",  # 你的项目主页
