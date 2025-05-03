@@ -15,10 +15,9 @@ from deprecated import deprecated
 from typing import Callable, Optional, Dict
 import functools
 import numpy as np
+import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import pynvml
 import shlex
-import re
 
 # 用于保存每个函数的执行时间
 execution_times = {}
@@ -42,14 +41,10 @@ logging.basicConfig(
 # 全局变量，用于记录插入的记录数
 inserted_count = -1
 
-import pandas as pd
-import numpy as np
-
 def calculate_metrics(file_path):
     """
-    计算CSV文件中的统计信息和能耗，针对多GPU情况，
+    计算CSV文件中的统计信息和能耗
     先按gpu_index分组后再计算GPU相关指标。
-    
     参数:
         file_path (str): CSV文件路径
     返回:
@@ -63,20 +58,27 @@ def calculate_metrics(file_path):
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     # 计算总时间（秒）
     total_time = (df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]).total_seconds()
-    
     # 定义需要清洗的所有列
-    cols_to_clean = ['cpu_usage', 'cpu_power_draw', 'dram_usage', 'dram_power_draw',
-                     'gpu_power_draw', 'utilization_gpu', 'utilization_memory', 
-                     'pcie_link_gen_current', 'pcie_link_width_current',
-                     'temperature_gpu', 'temperature_memory', 
-                     'clocks_gr', 'clocks_mem', 'clocks_sm']
+    cols_to_clean = ['cpu_usage', 
+                     'cpu_power_draw', 
+                     'dram_usage', 
+                     'dram_power_draw',
+                     'gpu_power_draw', 
+                     'utilization_gpu', 
+                     'utilization_memory', 
+                     'pcie_link_gen_current', 
+                     'pcie_link_width_current',
+                     'temperature_gpu', 
+                     'temperature_memory', 
+                     'clocks_gr', 
+                     'clocks_mem', 
+                     'clocks_sm']
     # 清洗：去除百分比、单位等非数值字符，并转换为数值
     for col in cols_to_clean:
         if col in df.columns:
             if df[col].dtype == object:
                 df[col] = df[col].str.replace(r'[^\d.]', '', regex=True)
             df[col] = pd.to_numeric(df[col], errors='coerce')
-    
     # 定义单位映射
     unit_map = {
         'cpu_usage': ' %',
@@ -131,7 +133,7 @@ def calculate_metrics(file_path):
                     unit = unit_map.get(col, '')
                     gpu_stats[gpu_idx][col] = compute_stat(group[col], unit)
     
-    # --- 能耗计算部分修改 ---
+    # --- 能耗计算部分 ---
     # 为 CPU 和 DRAM 能耗计算先对整体数据按时间戳去重
     df_unique = df.drop_duplicates(subset=['timestamp']).copy()
     df_unique['time_interval'] = df_unique['timestamp'].diff().dt.total_seconds().fillna(0)
@@ -219,7 +221,8 @@ def get_max_time(func_name):
         return max(execution_times[func_name])
     else:
         return None
-    
+
+# 用于监控函数运行时资源占用的装饰器工厂
 def monitor_resources(
     log_file: str = "resource_monitor.log",
     monitor_cpu: bool = True,
@@ -318,7 +321,6 @@ def monitor_resources(
         return wrapper
     return decorator
     
-# shell为False
 def run_task(command):
     """
     执行指定的命令并等待其完成。
@@ -337,7 +339,6 @@ def run_task(command):
         logging.error(f"Error running task command: {e}")
         return -1
 
-## @timing_decorator
 @monitor_resources(
     log_file="monitor_stats.log",
     monitor_cpu=True,
@@ -355,27 +356,22 @@ def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format
     stop_event (threading.Event): 用于停止监控的事件
     output_format (str): 输出格式（默认为CSV）
     """
-    # time_interval = time_interval - 1
     while not stop_event.is_set():
         try:
             start_time = time.time() # 记录开始时间
             # 用于插入数据的时间戳 保留1位小数
             time_stamp_insert = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-5]
-            
             # 并行采集所有指标
             metrics = parallel_collect_metrics()
-
             # 有效性检查
             if metrics["gpu_info"] is None:
                 logging.warning("No GPU info available, skipping data collection.")
                 time.sleep(time_interval)
                 continue
-
             if metrics["cpu_usage"] is None:
                 logging.warning("Failed to get CPU info, skipping data collection.")
                 time.sleep(time_interval)
-                continue
-            
+                continue           
             # 后续处理保持不变...
             other_metrics = [metrics["cpu_power"], metrics["dram_power"], metrics["dram_usage"]]
 
@@ -391,7 +387,6 @@ def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format
 
             elapsed_time = time.time() - start_time
             execution_times['elapsed_time'].append(elapsed_time)
-
             remaining_time = max(0, time_interval - elapsed_time)
             time.sleep(remaining_time)
 
@@ -399,7 +394,6 @@ def monitor_stats(task_name, time_interval, timestamp, stop_event, output_format
             logging.error(f"Unexpected error in monitor_stats: {e}")
             time.sleep(time_interval)       
 
-# @timing_decorator
 def get_gpu_info():
     """
     获取基本GPU信息，返回一个字典列表，每个字典包含一个GPU的信息
@@ -432,7 +426,6 @@ def get_gpu_info():
         logging.error(f"Unexpected error in run_basic_info: {e}")
         return []
 
-# @timing_decorator
 def get_cpu_usage_info():
     """
     获取CPU信息
@@ -446,7 +439,6 @@ def get_cpu_usage_info():
         logging.error(f"Error getting CPU info: {e}")
         return None
 
-# @timing_decorator
 def get_cpu_power_info(sample_interval=0.050):
     """
     获取 CPU 功耗（两次采样差值计算，单位：瓦特）
@@ -505,7 +497,6 @@ def get_cpu_power_info(sample_interval=0.050):
         logging.error(f"Error getting CPU power info: {e}")
         return "N/A"
 
-# @timing_decorator
 def get_dram_usage_info():
     """
     获取DRAM使用情况
@@ -520,7 +511,6 @@ def get_dram_usage_info():
         logging.error(f"Error getting DRAM usage info: {e}")
         return None
 
-# @timing_decorator
 def get_dram_power_info(sample_interval=0.050):
     """
     获取 DRAM 功耗（两次采样差值计算，单位：瓦特）
@@ -582,7 +572,6 @@ def get_dram_power_info(sample_interval=0.050):
         logging.error(f"Error getting DRAM power info: {e}", exc_info=True)
         return "N/A"
 
-# @timing_decorator
 def parallel_collect_metrics():
     """
     并行收集硬件指标
@@ -606,8 +595,6 @@ def parallel_collect_metrics():
                 result = future.result()
                 if key == 'gpu_info':
                     gpu_data_list = result
-                # elif key == 'sm_info':
-                #     sm_data = result
                 else:
                     metrics[key] = result
             except Exception as e:
@@ -617,8 +604,8 @@ def parallel_collect_metrics():
         metrics['gpu_info'] = gpu_data_list
 
     return metrics
-    
-# @timing_decorator
+
+# mysql太久没更新，先不更新
 def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, time_stamp_insert):
     """
     将数据保存到MySQL数据库
@@ -662,7 +649,6 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
             pcie_link_width_current VARCHAR(50) COMMENT 'Current width of the PCIe link',
             temperature_gpu VARCHAR(50) COMMENT 'Temperature of the GPU in Celsius',
             temperature_memory VARCHAR(50) COMMENT 'Temperature of the GPU memory in Celsius',
-
             clocks_gr VARCHAR(50) COMMENT 'Graphics clock frequency',
             clocks_mem VARCHAR(50) COMMENT 'Memory clock frequency',
             clocks_sm VARCHAR(50) COMMENT 'SM clock frequency'
@@ -691,7 +677,6 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
             #  GPU温度可能不可用
             temp_gpu = gpu_info.get("temperature.gpu", "N/A")
             temp_memory = gpu_info.get("temperature.memory", "N/A")
-            # sm_val = gpu_info.get("sm", "N/A")
 
             # 构建数据元组，每个元素对应一列数据
             data = (
@@ -708,10 +693,8 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
                 f"{gpu_info.get('utilization.memory [%]', '')}",      
                 f"{gpu_info.get('pcie.link.gen.current', '')}",       
                 f"{gpu_info.get('pcie.link.width.current', '')}",     
-
                 f"{temp_gpu} °C" if temp_gpu != "N/A" else "N/A",
                 f"{temp_memory} °C" if temp_memory != "N/A" else "N/A",
-
                 f"{gpu_info.get('clocks.current.graphics [MHz]', '')}",
                 f"{gpu_info.get('clocks.current.memory [MHz]', '')}",
                 f"{gpu_info.get('clocks.current.sm [MHz]', '')}"
@@ -728,11 +711,6 @@ def save_to_mysql(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp,
     except Exception as e:
         logging.error(f"Unexpected error in save_to_mysql: {e}")
 
-# @timing_decorator
-import os
-import csv
-import logging
-
 def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, time_stamp_insert):
     """
     将数据保存到CSV文件
@@ -745,24 +723,34 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
     """
     try:
         global inserted_count
-
         # 定义保存数据的目录
         save_dir = os.path.join(os.path.dirname(__file__), 'monitor_data')
         os.makedirs(save_dir, exist_ok=True)  # 如果目录不存在，则创建
-        
         # 生成标准化文件名
         filename = os.path.join(save_dir, f"{task_name}_{timestamp}.csv")
-        
         # 数据写入模式（追加模式）
         write_mode = 'a' if os.path.exists(filename) else 'w'
-
         with open(filename, mode=write_mode, newline='', encoding='utf-8') as csvfile:
             # 字段顺序与MySQL表结构完全对应
             fieldnames = [
-                'timestamp', 'task_name', 'cpu_usage', 'cpu_power_draw', 'dram_usage', 'dram_power_draw', 'gpu_name', 'gpu_index', 
-                'gpu_power_draw', 'utilization_gpu', 'utilization_memory', 
-                'pcie_link_gen_current', 'pcie_link_width_current', 
-                'temperature_gpu', 'temperature_memory', 'clocks_gr', 'clocks_mem', 'clocks_sm'
+                'timestamp', 
+                'task_name', 
+                'cpu_usage', 
+                'cpu_power_draw', 
+                'dram_usage', 
+                'dram_power_draw', 
+                'gpu_name', 
+                'gpu_index', 
+                'gpu_power_draw', 
+                'utilization_gpu', 
+                'utilization_memory', 
+                'pcie_link_gen_current', 
+                'pcie_link_width_current', 
+                'temperature_gpu', 
+                'temperature_memory', 
+                'clocks_gr', 
+                'clocks_mem', 
+                'clocks_sm'
             ]
             
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -788,7 +776,6 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
                     'timestamp': time_stamp_insert,
                     'task_name': task_name,
                     'cpu_usage': f"{cpu_usage:.2f} %",
-
                     'cpu_power_draw': cpu_power_draw,
                     'dram_power_draw': dram_power_draw,
                     'dram_usage': f"{other_metrics[2]:.2f} %",
@@ -815,7 +802,6 @@ def save_to_csv(task_name, cpu_usage, gpu_data_list, other_metrics, timestamp, t
     except Exception as e:
         logging.error(f"Unexpected error in save_to_csv: {str(e)}")
 
-# @timing_decorator
 def fetch_and_plot_data(table_name, format):
     """
     从MySQL数据库或CSV文件中检索数据并绘制图表
@@ -1079,29 +1065,25 @@ def main():
             logging.error(f"Task '{args.Command}' failed with exit code {exit_code}, data was monitored and saved to table {table_name}")
             print(f"------------------------------------------------------------------------------------------")
             # print(f"任务 '{args.Command}' 运行失败，退出码: {exit_code}")
-        
         print(f"ECM监控工具已停止运行，共采集{inserted_count}个样本，详细数据已保存至:monitor_data/{args.name}_{timestamp}.csv，简略数据如下：")
         
+
         # 获取当前文件所在目录，计算指标
         current_dir = os.path.dirname(os.path.abspath(__file__))
         csv_file_path = os.path.join(current_dir, 'monitor_data', f"{args.name}_{timestamp}.csv")
         metrics = calculate_metrics(csv_file_path)
-
-        # 假设 metrics 是 calculate_metrics 返回的结果
+        # metrics 是 calculate_metrics 返回的结果
         cpu_dram_stats = metrics['cpu_dram_stats']
         gpu_stats = metrics['gpu_stats']
         total_time = metrics['total_time']
         energy_consumption = metrics['energy_consumption']
-
         print(f"任务 '{args.Command}' 耗时: {total_time}", end="")
         print(f" | CPU能耗: {energy_consumption['cpu_energy']}", end="")
         print(f" | DRAM能耗: {energy_consumption['dram_energy']}", end="")
-
         # 输出各个 GPU 的能耗
         for gpu in energy_consumption['gpu_energy']:
             print(f" | GPU{gpu}能耗: {energy_consumption['gpu_energy'][gpu]}", end="")
         print(" | 总能耗: ", energy_consumption['total_energy'])
-
         # 对应的中文键名映射
         label_map = {
             'mean': '平均值',
@@ -1109,7 +1091,6 @@ def main():
             'min': '最小值',
             'mode': '众数'
         }
-
         # 打印 CPU 和 DRAM 的统计信息
         print("\n【CPU/DRAM统计信息】")
         for metric, values in cpu_dram_stats.items():
@@ -1118,7 +1099,6 @@ def main():
             for key in ['mean', 'max', 'min', 'mode']:
                 details.append(f"{label_map[key]}: {values.get(key, 'N/A')}")
             print(", ".join(details))
-
         # 打印各 GPU 的统计信息
         print("\n【GPU统计信息】")
         for gpu, stats in gpu_stats.items():

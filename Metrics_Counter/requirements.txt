@@ -1,6 +1,7 @@
+
+
 psutil
 mysql-connector-python
 pandas
-plotly
-deprecated
 numpy
+plotly
