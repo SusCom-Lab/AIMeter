@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PYTHON_BIN="sudo /home/ldaphome/hhz/.conda/envs/llama/bin/python"
+PYTHON_BIN="sudo python"
 PID_FILE="python_pid.txt"
 LOG_BASE_DIR="monitor_logs_sleep"
 SCRIPT_LIST=("llm_with_monitor.py" "llm_without_monitor.py" "sleep.py")

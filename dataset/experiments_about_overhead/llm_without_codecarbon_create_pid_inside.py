@@ -9,7 +9,7 @@ import csv # Import csv at the top
 
 # Define constants at the module level if they are used in the main block or multiple functions
 PID_FILENAME = "python_pid.txt" # The name of the file to store the PID
-MODEL_ID = "/home/ldaphome/hhz/workspace/LLM/LLM_Model/Llama-2-7b-hf"
+MODEL_ID = "__MODEL_ID__"  # Replace with the actual model ID
 
 def run_llama_inference_and_log():
     """

@@ -23,7 +23,7 @@ except Exception as e:
     print(f"Critical Error: Could not write PID to {PID_FILENAME}. Error: {e}", file=sys.stderr)
     sys.exit(1) # Exit the script if PID cannot be written, as monitoring would fail.
 
-model_id = "/home/ldaphome/hhz/workspace/LLM/LLM_Model/Llama-2-7b-hf"
+model_id = "__MODEL_ID__"  # 替换为实际的模型ID
 tokenizer = LlamaTokenizer.from_pretrained(model_id)
 tokenizer.pad_token = tokenizer.eos_token  # 设置 pad_token 为 eos_token
 model = LlamaForCausalLM.from_pretrained(

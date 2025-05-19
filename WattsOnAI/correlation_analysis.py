@@ -216,7 +216,7 @@ class CsvCorrelationAnalyzer:
 # --- 示例用法 ---
 if __name__ == "__main__":
     # 确保路径正确
-    your_csv_file_path = '/home/ldaphome/hhz/workspace/LLM/experiment_files/A800_Llama2-7b_prefill_decode_batch_size_2_input_40000_0.1.csv'
+    your_csv_file_path = '__YOUR_CSV_FILE_PATH__'  # 替换为您的 CSV 文件路径
     print(f"尝试从以下路径加载 CSV 文件: {your_csv_file_path}")
 
     analyzer = CsvCorrelationAnalyzer(csv_filepath=your_csv_file_path)

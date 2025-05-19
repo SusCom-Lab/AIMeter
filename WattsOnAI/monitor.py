@@ -1,6 +1,6 @@
 import sys
 # 这里的路径需要根据实际情况进行调整
-sys.path.append('/home/ldaphome/hhz/workspace/LLM/Metrics_Counter')
+sys.path.append('__file__' + '/..')
 import time
 from datetime import datetime
 import threading
@@ -128,7 +128,7 @@ def print_formatted_metrics(metrics: dict[str, any], task_name: str):
     # 写成英文
     print(f"  {'Total Energy':<{LABEL_WIDTH}}: {_format_value(energy_consumption.get('total_energy'), precision=3)}")
     if state._position_use == 1:
-        result = get_current_carbon_intensity(username="Foster", password="Bigben077@", latitude=state._latitude, longitude=state._longitude)
+        result = get_current_carbon_intensity(username="xxx", password="xxx", latitude=state._latitude, longitude=state._longitude)
         lbs, kg = compute_carbon_emission(float(energy_consumption.get('total_energy').replace(" J", "")), result['value'])
         print(f"  {'Carbon Emissions':<{LABEL_WIDTH}}: {kg:.4f} kg CO2eq")
 

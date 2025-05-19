@@ -10,7 +10,7 @@ from codecarbon import track_emissions
 
 # Define constants at the module level if they are used in the main block or multiple functions
 PID_FILENAME = "python_pid.txt" # The name of the file to store the PID
-MODEL_ID = "/home/ldaphome/hhz/workspace/LLM/LLM_Model/Llama-2-7b-hf"
+MODEL_ID = "__MODEL_ID__" # Placeholder for the model ID, replace with actual model ID
 
 @track_emissions(measure_power_secs=1)
 def run_llama_inference_and_log():
