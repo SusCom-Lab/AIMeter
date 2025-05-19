@@ -1,7 +1,0 @@
-
-
-psutil
-mysql-connector-python
-pandas
-numpy
-plotly
