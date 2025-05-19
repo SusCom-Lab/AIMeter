@@ -1,6 +1,6 @@
 # WattsOnAI 📊
 
-![WattsOnAi Architecture](architecture.jpg)
+![WattsOnAi Architecture](assets/architecture.jpg)
 
 A comprehensive software toolkit for the measurement, analysis, and visualization of energy use, power draw, hardware performance, and carbon emissions across AI workloads.
 
