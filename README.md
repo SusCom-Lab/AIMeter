@@ -96,9 +96,5 @@ draw.draw_csv(table_path='/home/clean_20250421_142525.csv')
 # Draw data from the MySQL table named 'clean_20250421_133841'
 draw.draw_mysql(table_name='clean_20250421_133841')
 ```
----
 
-## License 📄
-
-This project is licensed under the MIT License – see the `LICENSE` file for details.
 
