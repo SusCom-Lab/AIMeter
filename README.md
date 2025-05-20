@@ -51,7 +51,7 @@ sudo apt-get install -y datacenter-gpu-manager
 ### Step 2: Import
 
 ```python
-from Metrics_Counter import monitor, draw
+from WattsOnAI import monitor, draw
 ```
 
 ---
