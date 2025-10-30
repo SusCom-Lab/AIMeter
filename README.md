@@ -1,6 +1,6 @@
-# WattsOnAI 📊
+# AIMeter 📊
 
-![WattsOnAi Architecture](assets/architecture.jpg)
+![AIMeter Architecture](assets/architecture.jpg)
 
 A comprehensive software toolkit for the measurement, analysis, and visualization of energy use, power draw, hardware performance, and carbon emissions across AI workloads.
 
@@ -51,7 +51,7 @@ sudo apt-get install -y datacenter-gpu-manager
 ### Step 2: Import
 
 ```python
-from WattsOnAI import monitor, draw
+from AIMeter import monitor, draw
 ```
 
 ---
